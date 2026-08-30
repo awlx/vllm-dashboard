@@ -1,0 +1,16 @@
+{
+  "listen": "0.0.0.0:9090",
+  "node": {
+    "key": "node-a",
+    "hostname": "node-a.example.net",
+    "models": [
+      {
+        "key": "model-a",
+        "name": "Model A",
+        "metrics_url": "http://127.0.0.1:8000/metrics",
+        "port": "8000",
+        "unit": "vllm-model-a.service"
+      }
+    ]
+  }
+}

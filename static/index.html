@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>vLLM Fleet Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-border: #1f2937;
+    --text: #e5e7eb;
+    --muted: #8b98a9;
+    --accent: #22d3ee;
+    --accent2: #a78bfa;
+    --good: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 10% -10%, #14202b 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 28px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h1 .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 8px var(--good);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .topbar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  .topbar .sub { margin-bottom: 0; }
+  .model-switcher {
+    display: inline-flex;
+    padding: 3px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    background: #0e141c;
+  }
+  .model-switcher button {
+    border: 0;
+    border-radius: 6px;
+    padding: 8px 13px;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .model-switcher button.active {
+    color: #071217;
+    background: var(--accent);
+  }
+  .overview-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .model-card {
+    display: grid;
+    grid-template-columns: minmax(150px, 1.4fr) repeat(4, minmax(80px, 1fr));
+    align-items: center;
+    gap: 14px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: linear-gradient(160deg, var(--panel), #0e141c);
+  }
+  .model-name { font-size: 14px; font-weight: 650; }
+  .model-status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; margin-top: 5px; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
+  .status-dot.online { background: var(--good); box-shadow: 0 0 7px var(--good); }
+  .model-stat .k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .model-stat .v { margin-top: 5px; font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: linear-gradient(160deg, var(--panel), #0e141c);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    padding: 16px 18px;
+  }
+  .card .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .card .value {
+    font-size: 28px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .card .unit { font-size: 14px; color: var(--muted); font-weight: 400; margin-left: 2px; }
+  .charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 16px;
+  }
+  .chart-card {
+    background: linear-gradient(160deg, var(--panel), #0e141c);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    padding: 16px 18px;
+  }
+  .chart-card .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .chart-wrap { position: relative; }
+  .axis-label {
+    position: absolute;
+    left: 0;
+    font-size: 10px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+  .legend {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 4px 10px 4px 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .legend-item.hidden {
+    opacity: .42;
+  }
+  .legend-item.hidden .legend-swatch {
+    background: transparent !important;
+    box-shadow: inset 0 0 0 1px currentColor;
+  }
+  .legend-swatch {
+    width: 10px; height: 10px; border-radius: 3px;
+    flex: 0 0 auto;
+  }
+  .legend-value {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    margin-left: 2px;
+  }
+  canvas { width: 100%; height: 140px; display: block; cursor: crosshair; }
+  .tooltip {
+    position: absolute;
+    display: none;
+    top: 6px;
+    background: #1a2330;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    pointer-events: none;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+    white-space: nowrap;
+    z-index: 10;
+  }
+  .tooltip .t-time { color: var(--muted); margin-bottom: 4px; font-size: 11px; }
+  .tooltip .t-row { display: flex; align-items: center; gap: 6px; }
+  .tooltip .t-swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 28px 0 14px;
+  }
+  .section-note {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .footer { margin-top: 20px; color: var(--muted); font-size: 12px; }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+  .badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+  .badge .k { color: var(--muted); }
+  .badge .v { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .legend-side { color: var(--muted); font-size: 10px; margin-left: 3px; }
+  .card .value.good { color: var(--good); }
+  .card .value.warn { color: var(--warn); }
+  .card .value.bad { color: var(--bad); }
+  .token-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .token-grid .card { padding: 12px 16px; }
+  .token-grid .value { font-size: 20px; }
+  .token-grid .sub-value { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  @media (max-width: 900px) {
+    body { padding: 18px; }
+    .topbar { flex-direction: column; }
+    .overview-grid { grid-template-columns: 1fr; }
+    .model-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .model-identity { grid-column: 1 / -1; }
+    .charts { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 520px) {
+    .model-switcher { width: 100%; }
+    .model-switcher button { flex: 1; padding: 8px 6px; }
+  }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <h1><span class="dot"></span>vLLM Fleet Metrics</h1>
+      <div class="sub" id="view-subtitle">All model instances · refreshing every 2s</div>
+    </div>
+    <div class="model-switcher" role="group" aria-label="Model view">
+      <button type="button" class="active" data-model="all">All models</button>
+    </div>
+  </div>
+
+  <div class="overview-grid" id="model-overview"></div>
+
+  <h2 class="section-title" id="node-overview-title">Node Health</h2>
+  <div class="overview-grid" id="node-overview"></div>
+
+  <div class="badges" id="badges"></div>
+
+  <div class="token-grid">
+    <div class="card">
+      <div class="label">Tokens In (1h)</div>
+      <div class="value" id="tok_in_1h">–</div>
+      <div class="sub-value" id="tok_out_1h">out: –</div>
+    </div>
+    <div class="card">
+      <div class="label">Tokens Total (1h)</div>
+      <div class="value" id="tok_total_1h">–</div>
+    </div>
+    <div class="card">
+      <div class="label">Tokens In (24h)</div>
+      <div class="value" id="tok_in_24h">–</div>
+      <div class="sub-value" id="tok_out_24h">out: –</div>
+    </div>
+    <div class="card">
+      <div class="label">Tokens Total (24h)</div>
+      <div class="value" id="tok_total_24h">–</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card" data-host-metric><div class="label">GPU Utilization</div><div class="value" id="gpu_util">–<span class="unit">%</span></div></div>
+    <div class="card" data-host-metric><div class="label">GPU Temp</div><div class="value" id="gpu_temp">–<span class="unit">°C</span></div></div>
+    <div class="card" data-host-metric><div class="label">GPU Power</div><div class="value" id="gpu_power">–<span class="unit">W</span></div></div>
+    <div class="card"><div class="label">KV Cache Usage</div><div class="value" id="kv_cache">–<span class="unit">%</span></div></div>
+    <div class="card"><div class="label">Running Requests</div><div class="value" id="running">–</div></div>
+    <div class="card"><div class="label">Waiting Requests</div><div class="value" id="waiting">–</div></div>
+    <div class="card"><div class="label">Prompt Throughput</div><div class="value" id="prompt_tps">–<span class="unit">tok/s</span></div></div>
+    <div class="card"><div class="label">Generation Throughput</div><div class="value" id="gen_tps">–<span class="unit">tok/s</span></div></div>
+    <div class="card"><div class="label">Requests / sec</div><div class="value" id="req_per_sec">–<span class="unit">req/s</span></div></div>
+    <div class="card"><div class="label">Avg Time to First Token</div><div class="value" id="ttft">–<span class="unit">ms</span></div></div>
+    <div class="card"><div class="label">Avg Inter-token Latency</div><div class="value" id="itl">–<span class="unit">ms</span></div></div>
+    <div class="card"><div class="label">Avg End-to-End Latency</div><div class="value" id="e2e_latency">–<span class="unit">ms</span></div></div>
+    <div class="card"><div class="label">Prefix Cache Hit Rate</div><div class="value" id="prefix_hit">–<span class="unit">%</span></div></div>
+    <div class="card"><div class="label">Spec-Decode Accept Rate</div><div class="value" id="spec_accept">–<span class="unit">%</span></div></div>
+    <div class="card"><div class="label">Completed Requests</div><div class="value" id="completed">–</div></div>
+    <div class="card"><div class="label">Preemptions</div><div class="value" id="preemptions">–</div></div>
+    <div class="card" data-host-metric><div class="label">CPU Utilization</div><div class="value" id="cpu_util">–<span class="unit">%</span></div></div>
+    <div class="card" data-host-metric><div class="label">Memory Used</div><div class="value" id="mem_used">–<span class="unit">%</span></div></div>
+    <div class="card" data-host-metric><div class="label">Network RX</div><div class="value" id="net_rx">–<span class="unit">Mbps</span></div></div>
+    <div class="card" data-host-metric><div class="label">Network TX</div><div class="value" id="net_tx">–<span class="unit">Mbps</span></div></div>
+  </div>
+
+  <div class="charts">
+    <div class="chart-card">
+      <div class="label">GPU Utilization %</div>
+      <div class="chart-wrap"><canvas id="chart_gpu"></canvas><div class="tooltip" id="tooltip_gpu"></div></div>
+      <div class="legend" id="legend_gpu"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">GPU Temperature / Power</div>
+      <div class="chart-wrap"><canvas id="chart_gpu_thermal"></canvas><div class="tooltip" id="tooltip_gpu_thermal"></div></div>
+      <div class="legend" id="legend_gpu_thermal"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">KV Cache Usage %</div>
+      <div class="chart-wrap"><canvas id="chart_kv"></canvas><div class="tooltip" id="tooltip_kv"></div></div>
+      <div class="legend" id="legend_kv"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Token Throughput (tok/s)</div>
+      <div class="chart-wrap"><canvas id="chart_tps"></canvas><div class="tooltip" id="tooltip_tps"></div></div>
+      <div class="legend" id="legend_tps"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Running / Waiting Requests</div>
+      <div class="chart-wrap"><canvas id="chart_reqs"></canvas><div class="tooltip" id="tooltip_reqs"></div></div>
+      <div class="legend" id="legend_reqs"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Latency (ms)</div>
+      <div class="chart-wrap"><canvas id="chart_latency"></canvas><div class="tooltip" id="tooltip_latency"></div></div>
+      <div class="legend" id="legend_latency"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Spec-Decode Accept Rate %</div>
+      <div class="chart-wrap"><canvas id="chart_spec"></canvas><div class="tooltip" id="tooltip_spec"></div></div>
+      <div class="legend" id="legend_spec"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">CPU / Memory %</div>
+      <div class="chart-wrap"><canvas id="chart_sys"></canvas><div class="tooltip" id="tooltip_sys"></div></div>
+      <div class="legend" id="legend_sys"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Network (Mbps)</div>
+      <div class="chart-wrap"><canvas id="chart_net"></canvas><div class="tooltip" id="tooltip_net"></div></div>
+      <div class="legend" id="legend_net"></div>
+    </div>
+  </div>
+
+  <h2 class="section-title">Last 24 Hours <span class="section-note">(1 min resolution, resets on service restart)</span></h2>
+  <div class="charts">
+    <div class="chart-card">
+      <div class="label">GPU Utilization %</div>
+      <div class="chart-wrap"><canvas id="chart_gpu_24h"></canvas><div class="tooltip" id="tooltip_gpu_24h"></div></div>
+      <div class="legend" id="legend_gpu_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">GPU Temperature / Power</div>
+      <div class="chart-wrap"><canvas id="chart_gpu_thermal_24h"></canvas><div class="tooltip" id="tooltip_gpu_thermal_24h"></div></div>
+      <div class="legend" id="legend_gpu_thermal_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">KV Cache Usage %</div>
+      <div class="chart-wrap"><canvas id="chart_kv_24h"></canvas><div class="tooltip" id="tooltip_kv_24h"></div></div>
+      <div class="legend" id="legend_kv_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Token Throughput (tok/s)</div>
+      <div class="chart-wrap"><canvas id="chart_tps_24h"></canvas><div class="tooltip" id="tooltip_tps_24h"></div></div>
+      <div class="legend" id="legend_tps_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Running / Waiting Requests</div>
+      <div class="chart-wrap"><canvas id="chart_reqs_24h"></canvas><div class="tooltip" id="tooltip_reqs_24h"></div></div>
+      <div class="legend" id="legend_reqs_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Latency (ms)</div>
+      <div class="chart-wrap"><canvas id="chart_latency_24h"></canvas><div class="tooltip" id="tooltip_latency_24h"></div></div>
+      <div class="legend" id="legend_latency_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Spec-Decode Accept Rate %</div>
+      <div class="chart-wrap"><canvas id="chart_spec_24h"></canvas><div class="tooltip" id="tooltip_spec_24h"></div></div>
+      <div class="legend" id="legend_spec_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">CPU / Memory %</div>
+      <div class="chart-wrap"><canvas id="chart_sys_24h"></canvas><div class="tooltip" id="tooltip_sys_24h"></div></div>
+      <div class="legend" id="legend_sys_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Network (Mbps)</div>
+      <div class="chart-wrap"><canvas id="chart_net_24h"></canvas><div class="tooltip" id="tooltip_net_24h"></div></div>
+      <div class="legend" id="legend_net_24h"></div>
+    </div>
+  </div>
+
+  <div class="footer">Live metrics from configured vLLM nodes</div>
+
+<script>
+class LineChart {
+  constructor(canvasId, tooltipId, legendId) {
+    this.canvas = document.getElementById(canvasId);
+    this.tooltip = document.getElementById(tooltipId);
+    this.legendEl = document.getElementById(legendId);
+    this.ctx = this.canvas.getContext('2d');
+    this.series = [];
+    this.times = [];
+    this.opts = {};
+    this.hoverIndex = null;
+    this.hiddenSeries = new Set();
+
+    this.legendEl.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-series-id]');
+      if (!item) return;
+      const id = item.dataset.seriesId;
+      if (this.hiddenSeries.has(id)) this.hiddenSeries.delete(id);
+      else this.hiddenSeries.add(id);
+      this.render();
+    });
+
+    this.canvas.addEventListener('mousemove', (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const len = this.times.length;
+      if (len < 2) return;
+      this.hoverIndex = Math.round(frac * (len - 1));
+      this.render();
+    });
+    this.canvas.addEventListener('mouseleave', () => {
+      this.hoverIndex = null;
+      this.tooltip.style.display = 'none';
+      this.render();
+    });
+  }
+
+  update(series, times, opts) {
+    this.series = series;
+    this.times = times;
+    this.opts = opts;
+    this.render();
+  }
+
+  render() {
+    const { ctx, canvas, series, opts } = this;
+    const visibleSeries = series.filter(s => !this.hiddenSeries.has(s.id || s.label));
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const leftSeries = visibleSeries.filter(s => s.axis !== 'right');
+    const rightSeries = visibleSeries.filter(s => s.axis === 'right');
+    const leftVals = leftSeries.flatMap(s => s.data);
+    const rightVals = rightSeries.flatMap(s => s.data);
+    let leftMax = Math.max(opts.minMax || 1, ...leftVals, 0.001);
+    if (opts.fixedMax) leftMax = opts.fixedMax;
+    let rightMax = Math.max(opts.rightMinMax || 1, ...rightVals, 0.001);
+    if (opts.rightFixedMax) rightMax = opts.rightFixedMax;
+    const maxOf = s => (s.axis === 'right' ? rightMax : leftMax);
+    const len = this.times.length;
+
+    ctx.font = '10px -apple-system, sans-serif';
+    const formatAxis = (value, unit = '') => value.toFixed(value < 10 ? 1 : 0) + unit;
+    const leftLabelWidth = Math.max(...[0, 1, 2, 3].map(i => ctx.measureText(formatAxis(leftMax * i / 3, opts.unit)).width));
+    const rightLabelWidth = rightSeries.length
+      ? Math.max(...[0, 1, 2, 3].map(i => ctx.measureText(formatAxis(rightMax * i / 3, opts.rightUnit)).width))
+      : 0;
+    const plotLeft = Math.ceil(leftLabelWidth) + 10;
+    const plotRight = w - (rightSeries.length ? Math.ceil(rightLabelWidth) + 10 : 4);
+    const plotTop = 4;
+    const plotBottom = h - 14;
+    const plotWidth = Math.max(1, plotRight - plotLeft);
+    const plotHeight = Math.max(1, plotBottom - plotTop);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 3; i++) {
+      const y = plotBottom - (plotHeight * i / 3);
+      ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotRight, y); ctx.stroke();
+
+      ctx.fillStyle = 'rgba(139,152,169,0.85)';
+      const leftVal = (leftMax * i / 3);
+      ctx.textAlign = 'right';
+      ctx.fillText(formatAxis(leftVal, opts.unit), plotLeft - 5, y + 3);
+
+      if (rightSeries.length) {
+        const rightVal = (rightMax * i / 3);
+        ctx.textAlign = 'left';
+        ctx.fillText(formatAxis(rightVal, opts.rightUnit), plotRight + 5, y + 3);
+      }
+    }
+    ctx.textAlign = 'left';
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plotLeft, plotTop, plotWidth, plotHeight);
+    ctx.clip();
+    visibleSeries.forEach(s => {
+      if (s.data.length < 2) return;
+      const maxVal = maxOf(s);
+      ctx.beginPath();
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 2;
+      s.data.forEach((v, i) => {
+        const x = plotLeft + (i / (s.data.length - 1)) * plotWidth;
+        const y = plotBottom - (Math.min(v, maxVal) / maxVal) * plotHeight;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      if (s.fill) {
+        ctx.lineTo(plotRight, plotBottom); ctx.lineTo(plotLeft, plotBottom); ctx.closePath();
+        ctx.fillStyle = s.color + '22';
+        ctx.fill();
+      }
+    });
+    ctx.restore();
+
+    // legend, with live value shown next to each series (hovered point if hovering, else latest)
+    const idx = this.hoverIndex !== null ? this.hoverIndex : len - 1;
+    this.legendEl.innerHTML = series.map(s => {
+      const id = s.id || s.label;
+      const hidden = this.hiddenSeries.has(id);
+      const v = s.data[idx];
+      const unit = s.axis === 'right' ? (opts.rightUnit || '') : (opts.unit || '');
+      const decimals = opts.smallValuePrecision && v < 0.1 ? 2 : (v < 10 ? 1 : 0);
+      const shown = v === undefined ? '–' : v.toFixed(decimals) + unit;
+      const side = s.axis === 'right' ? ' <span class="legend-side">right axis</span>' : '';
+      return `<span class="legend-item${hidden ? ' hidden' : ''}" data-series-id="${esc(id)}" aria-pressed="${!hidden}"><span class="legend-swatch" style="background:${s.color}"></span>${esc(s.label)}${side}<span class="legend-value">${shown}</span></span>`;
+    }).join('');
+
+    if (this.hoverIndex === null || len < 2) {
+      this.tooltip.style.display = 'none';
+      return;
+    }
+
+    // crosshair
+    const x = plotLeft + (this.hoverIndex / (len - 1)) * plotWidth;
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.moveTo(x, 0); ctx.lineTo(x, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // tooltip content
+    const t = new Date(this.times[this.hoverIndex]);
+    const timeStr = t.toLocaleTimeString();
+    let html = `<div class="t-time">${timeStr}</div>`;
+    visibleSeries.forEach(s => {
+      const v = s.data[this.hoverIndex];
+      const unit = s.axis === 'right' ? (opts.rightUnit || '') : (opts.unit || '');
+      const shown = v === undefined ? '–' : v.toFixed(v < 10 ? 2 : 0) + unit;
+      html += `<div class="t-row"><span class="t-swatch" style="background:${s.color}"></span>${esc(s.label)}: <b>${shown}</b></div>`;
+    });
+    this.tooltip.innerHTML = html;
+    this.tooltip.style.display = 'block';
+
+    // position tooltip, flipping to the left side near the right edge
+    const tw = this.tooltip.offsetWidth || 140;
+    let left = x + 12;
+    if (left + tw > w) left = x - tw - 12;
+    this.tooltip.style.left = Math.max(0, left) + 'px';
+  }
+}
+
+const charts = {
+  gpu: new LineChart('chart_gpu', 'tooltip_gpu', 'legend_gpu'),
+  gpuThermal: new LineChart('chart_gpu_thermal', 'tooltip_gpu_thermal', 'legend_gpu_thermal'),
+  kv: new LineChart('chart_kv', 'tooltip_kv', 'legend_kv'),
+  tps: new LineChart('chart_tps', 'tooltip_tps', 'legend_tps'),
+  reqs: new LineChart('chart_reqs', 'tooltip_reqs', 'legend_reqs'),
+  latency: new LineChart('chart_latency', 'tooltip_latency', 'legend_latency'),
+  spec: new LineChart('chart_spec', 'tooltip_spec', 'legend_spec'),
+  sys: new LineChart('chart_sys', 'tooltip_sys', 'legend_sys'),
+  net: new LineChart('chart_net', 'tooltip_net', 'legend_net'),
+};
+
+const charts24h = {
+  gpu: new LineChart('chart_gpu_24h', 'tooltip_gpu_24h', 'legend_gpu_24h'),
+  gpuThermal: new LineChart('chart_gpu_thermal_24h', 'tooltip_gpu_thermal_24h', 'legend_gpu_thermal_24h'),
+  kv: new LineChart('chart_kv_24h', 'tooltip_kv_24h', 'legend_kv_24h'),
+  tps: new LineChart('chart_tps_24h', 'tooltip_tps_24h', 'legend_tps_24h'),
+  reqs: new LineChart('chart_reqs_24h', 'tooltip_reqs_24h', 'legend_reqs_24h'),
+  latency: new LineChart('chart_latency_24h', 'tooltip_latency_24h', 'legend_latency_24h'),
+  spec: new LineChart('chart_spec_24h', 'tooltip_spec_24h', 'legend_spec_24h'),
+  sys: new LineChart('chart_sys_24h', 'tooltip_sys_24h', 'legend_sys_24h'),
+  net: new LineChart('chart_net_24h', 'tooltip_net_24h', 'legend_net_24h'),
+};
+
+let selectedModel = 'all';
+let overviewData = [];
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+  })[char]);
+}
+
+function modelURL(path) {
+  return `${path}?model=${encodeURIComponent(selectedModel)}`;
+}
+
+function renderSet(set, data) {
+  if (!data || !data.length) return;
+  const times = data.map(d => d.t);
+
+  set.gpu.update(
+    [{ data: data.map(d => d.gpu_util_pct), color: '#22d3ee', fill: true, label: 'GPU util' }],
+    times, { fixedMax: 100, unit: '%' });
+
+  set.gpuThermal.update([
+    { data: data.map(d => d.gpu_temp_c), color: '#fb923c', label: 'temperature' },
+    { data: data.map(d => d.gpu_power_w), color: '#fbbf24', label: 'power', axis: 'right' },
+  ], times, { minMax: 80, unit: '°C', rightMinMax: 100, rightUnit: ' W' });
+
+  set.kv.update(
+    [{ data: data.map(d => d.kv_cache_pct), color: '#a78bfa', fill: true, label: 'KV cache' }],
+    times, { fixedMax: 100, unit: '%' });
+
+  set.tps.update([
+    { data: data.map(d => d.prompt_tps), color: '#34d399', label: 'prompt' },
+    { data: data.map(d => d.gen_tps), color: '#fbbf24', label: 'gen', axis: 'right' }
+  ], times, { minMax: 10, unit: ' tok/s', rightUnit: ' tok/s' });
+
+  set.reqs.update([
+    { data: data.map(d => d.running), color: '#22d3ee', label: 'running' },
+    { data: data.map(d => d.waiting), color: '#f87171', label: 'waiting' }
+  ], times, { minMax: 4 });
+
+  set.latency.update([
+    { data: data.map(d => d.ttft_ms), color: '#f472b6', label: 'TTFT' },
+    { data: data.map(d => d.inter_token_ms), color: '#60a5fa', label: 'inter-token' }
+  ], times, { minMax: 50, unit: 'ms' });
+
+  set.spec.update(
+    [{ data: data.map(d => d.spec_accept_pct), color: '#fb923c', fill: true, label: 'accept rate' }],
+    times, { fixedMax: 100, unit: '%' });
+
+  set.sys.update([
+    { data: data.map(d => d.cpu_util_pct), color: '#38bdf8', label: 'CPU' },
+    { data: data.map(d => d.mem_used_pct), color: '#c084fc', label: 'mem' }
+  ], times, { fixedMax: 100, unit: '%' });
+
+  set.net.update([
+    { data: data.map(d => d.net_rx_mbps), color: '#34d399', label: 'rx' },
+    { data: data.map(d => d.net_tx_mbps), color: '#f87171', label: 'tx' }
+  ], times, { minMax: 5, unit: ' Mbps', smallValuePrecision: true });
+}
+
+const chartPalette = [
+  ['#22d3ee', '#34d399'], ['#fb923c', '#f472b6'], ['#a78bfa', '#60a5fa'],
+  ['#fbbf24', '#f87171'], ['#2dd4bf', '#818cf8'], ['#e879f9', '#4ade80'],
+];
+
+function modelStyle(key) {
+  let hash = 0;
+  for (const char of key) hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
+  const colors = chartPalette[hash % chartPalette.length];
+  return { primary: colors[0], secondary: colors[1] };
+}
+
+function renderAllSet(set, sharedData, histories) {
+  const populated = histories.filter(model => model.samples && model.samples.length);
+  if (!sharedData.length || !populated.length) return;
+
+  const length = Math.min(sharedData.length, ...populated.map(model => model.samples.length));
+  const shared = sharedData.slice(-length);
+  const models = populated.map(model => ({ ...model, samples: model.samples.slice(-length) }));
+  const nodes = [...new Map(models.map(model => [model.nodeKey, {
+    key: model.nodeKey,
+    name: model.nodeName,
+    samples: model.samples,
+  }])).values()];
+  const times = shared.map(sample => sample.t);
+  const series = (field, variant, label, axis) => models.map(model => ({
+    id: `${model.key}:${field}`,
+    data: model.samples.map(sample => sample[field]),
+    color: modelStyle(model.key)[variant],
+    label: `${model.name} · ${label}`,
+    axis,
+  }));
+  const nodeSeries = (field, variant, label, axis) => nodes.map(node => ({
+    id: `${node.key}:${field}`,
+    data: node.samples.map(sample => sample[field]),
+    color: modelStyle(node.key)[variant],
+    label: `${node.name} · ${label}`,
+    axis,
+  }));
+
+  set.gpu.update(
+    nodeSeries('gpu_util_pct', 'primary', 'GPU util'),
+    times, { fixedMax: 100, unit: '%' });
+
+  set.gpuThermal.update([
+    ...nodeSeries('gpu_temp_c', 'primary', 'temperature'),
+    ...nodeSeries('gpu_power_w', 'secondary', 'power', 'right'),
+  ], times, { minMax: 80, unit: '°C', rightMinMax: 100, rightUnit: ' W' });
+
+  set.kv.update(
+    series('kv_cache_pct', 'primary', 'KV cache'),
+    times, { fixedMax: 100, unit: '%' });
+
+  set.tps.update([
+    ...series('prompt_tps', 'primary', 'prompt'),
+    ...series('gen_tps', 'secondary', 'generation', 'right'),
+  ], times, { minMax: 10, unit: ' tok/s', rightUnit: ' tok/s' });
+
+  set.reqs.update([
+    ...series('running', 'primary', 'running'),
+    ...series('waiting', 'secondary', 'waiting'),
+  ], times, { minMax: 4 });
+
+  set.latency.update([
+    ...series('ttft_ms', 'primary', 'TTFT'),
+    ...series('inter_token_ms', 'secondary', 'inter-token'),
+  ], times, { minMax: 50, unit: 'ms' });
+
+  set.spec.update(
+    series('spec_accept_pct', 'primary', 'accept rate'),
+    times, { fixedMax: 100, unit: '%' });
+
+  set.sys.update([
+    ...nodeSeries('cpu_util_pct', 'primary', 'CPU'),
+    ...nodeSeries('mem_used_pct', 'secondary', 'memory'),
+  ], times, { fixedMax: 100, unit: '%' });
+
+  set.net.update([
+    ...nodeSeries('net_rx_mbps', 'primary', 'rx'),
+    ...nodeSeries('net_tx_mbps', 'secondary', 'tx'),
+  ], times, { minMax: 5, unit: ' Mbps', smallValuePrecision: true });
+}
+
+async function fetchModelHistories(path) {
+  const availableModels = overviewData;
+  return Promise.all(availableModels.map(async model => {
+    const response = await fetch(`${path}?model=${encodeURIComponent(model.key)}`);
+    return {
+      key: model.key,
+      name: model.name,
+      nodeKey: model.node_key,
+      nodeName: model.node_name,
+      samples: await response.json(),
+    };
+  }));
+}
+
+// Applies a good/warn/bad class to a card's value element based on thresholds.
+// thresholds = [warnAt, badAt]; higher value is worse.
+function setCardLevel(id, value, warnAt, badAt) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('good', 'warn', 'bad');
+  if (value >= badAt) el.classList.add('bad');
+  else if (value >= warnAt) el.classList.add('warn');
+  else el.classList.add('good');
+}
+
+async function refresh() {
+  try {
+    const model = selectedModel;
+    const [res, histories] = await Promise.all([
+      fetch(`/api/metrics?model=${model}`),
+      model === 'all' ? fetchModelHistories('/api/metrics') : Promise.resolve([]),
+    ]);
+    const data = await res.json();
+    if (model !== selectedModel) return;
+    if (!data || !data.length) return;
+    const last = data[data.length - 1];
+
+    document.getElementById('gpu_util').firstChild.textContent = last.gpu_util_pct.toFixed(0);
+    document.getElementById('gpu_temp').firstChild.textContent = last.gpu_temp_c.toFixed(0);
+    document.getElementById('gpu_power').firstChild.textContent = last.gpu_power_w.toFixed(1);
+    document.getElementById('kv_cache').firstChild.textContent = last.kv_cache_pct.toFixed(1);
+    document.getElementById('running').textContent = last.running.toFixed(0);
+    document.getElementById('waiting').textContent = last.waiting.toFixed(0);
+    document.getElementById('prompt_tps').firstChild.textContent = last.prompt_tps.toFixed(0);
+    document.getElementById('gen_tps').firstChild.textContent = last.gen_tps.toFixed(0);
+    document.getElementById('req_per_sec').firstChild.textContent = last.req_per_sec.toFixed(2);
+    document.getElementById('ttft').firstChild.textContent = last.ttft_ms.toFixed(0);
+    document.getElementById('itl').firstChild.textContent = last.inter_token_ms.toFixed(0);
+    document.getElementById('e2e_latency').firstChild.textContent = last.e2e_latency_ms.toFixed(0);
+    document.getElementById('prefix_hit').firstChild.textContent = last.prefix_cache_hit_pct.toFixed(1);
+    document.getElementById('spec_accept').firstChild.textContent = last.spec_accept_pct.toFixed(1);
+    document.getElementById('completed').textContent = last.completed_requests.toFixed(0);
+    document.getElementById('preemptions').textContent = last.preemptions_total.toFixed(0);
+    document.getElementById('cpu_util').firstChild.textContent = last.cpu_util_pct.toFixed(0);
+    document.getElementById('mem_used').firstChild.textContent = last.mem_used_pct.toFixed(0);
+    document.getElementById('net_rx').firstChild.textContent = last.net_rx_mbps.toFixed(last.net_rx_mbps < 0.1 ? 2 : 1);
+    document.getElementById('net_tx').firstChild.textContent = last.net_tx_mbps.toFixed(last.net_tx_mbps < 0.1 ? 2 : 1);
+
+    setCardLevel('gpu_temp', last.gpu_temp_c, 75, 85);
+    setCardLevel('kv_cache', last.kv_cache_pct, 80, 93);
+    setCardLevel('waiting', last.waiting, 1, 4);
+    setCardLevel('cpu_util', last.cpu_util_pct, 70, 90);
+    setCardLevel('mem_used', last.mem_used_pct, 80, 92);
+
+    if (model === 'all') renderAllSet(charts, data, histories);
+    else renderSet(charts, data);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function refresh24h() {
+  try {
+    const model = selectedModel;
+    const [res, histories] = await Promise.all([
+      fetch(`/api/metrics/long?model=${model}`),
+      model === 'all' ? fetchModelHistories('/api/metrics/long') : Promise.resolve([]),
+    ]);
+    const data = await res.json();
+    if (model !== selectedModel) return;
+    if (model === 'all') renderAllSet(charts24h, data, histories);
+    else renderSet(charts24h, data);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function formatUptime(sec) {
+  if (!sec || sec <= 0) return '\u2013';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+async function refreshInfo() {
+  try {
+    if (selectedModel === 'all') {
+      const online = overviewData.filter(model => model.online).length;
+      document.getElementById('badges').innerHTML = [
+        ['instances', overviewData.length || 2],
+        ['online', `${online}/${overviewData.length || 2}`],
+        ['view', 'combined workload'],
+      ].map(([k, v]) => `<span class="badge"><span class="k">${k}</span><span class="v">${v}</span></span>`).join('');
+      return;
+    }
+    const res = await fetch(modelURL('/api/info'));
+    const info = await res.json();
+    let spec = '\u2013';
+    try {
+      const sc = JSON.parse(info.speculative_config || 'null');
+      if (sc) spec = `${sc.method} (k=${sc.num_speculative_tokens})`;
+    } catch (e) { /* leave default */ }
+
+    const badges = [
+      ['model', info.model || '\u2013'],
+      ['max ctx', info.max_model_len ? info.max_model_len + ' tok' : '\u2013'],
+      ['batch tokens', info.max_num_batched_tokens || '\u2013'],
+      ['spec-decode', spec],
+      ['vLLM', info.vllm_version || '\u2013'],
+      ['uptime', formatUptime(info.service_uptime_seconds)],
+      ['restarts', info.service_restarts || '0'],
+    ];
+    document.getElementById('badges').innerHTML = badges.map(([k, v]) =>
+      `<span class="badge"><span class="k">${k}</span><span class="v">${v}</span></span>`
+    ).join('');
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function formatTokens(n) {
+  if (n === undefined || n === null) return '\u2013';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return n.toFixed(0);
+}
+
+function updateHostMetricVisibility() {
+  const showNodeOverview = selectedModel === 'all';
+  document.querySelectorAll('[data-host-metric]').forEach(card => {
+    card.hidden = showNodeOverview;
+  });
+  document.getElementById('node-overview-title').hidden = !showNodeOverview;
+  document.getElementById('node-overview').hidden = !showNodeOverview;
+}
+
+async function refreshTokens() {
+  try {
+    const res = await fetch(modelURL('/api/tokens'));
+    const u = await res.json();
+    document.getElementById('tok_in_1h').textContent = formatTokens(u.last_hour.prompt_tokens);
+    document.getElementById('tok_out_1h').textContent = 'out: ' + formatTokens(u.last_hour.gen_tokens);
+    document.getElementById('tok_total_1h').textContent = formatTokens(u.last_hour.total_tokens);
+    document.getElementById('tok_in_24h').textContent = formatTokens(u.last_24h.prompt_tokens);
+    document.getElementById('tok_out_24h').textContent = 'out: ' + formatTokens(u.last_24h.gen_tokens);
+    document.getElementById('tok_total_24h').textContent = formatTokens(u.last_24h.total_tokens);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function refreshOverview() {
+  try {
+    const res = await fetch('/api/overview');
+    overviewData = await res.json();
+    const switcher = document.querySelector('.model-switcher');
+    switcher.innerHTML = [
+      `<button type="button" class="${selectedModel === 'all' ? 'active' : ''}" data-model="all">All models</button>`,
+      ...overviewData.map(model => `<button type="button" class="${selectedModel === model.key ? 'active' : ''}" data-model="${esc(model.key)}" title="${esc(model.node_name)}">${esc(model.name)}</button>`),
+    ].join('');
+    const nodes = [...new Map(overviewData.map(model => [model.node_key, model])).values()];
+    document.getElementById('node-overview').innerHTML = nodes.map(node => {
+      const latest = node.latest || {};
+      return `<div class="model-card">
+        <div class="model-identity">
+          <div class="model-name">${esc(node.node_name)}</div>
+          <div class="model-status"><span class="status-dot ${node.online ? 'online' : ''}"></span>${node.online ? 'Online' : 'Offline'}</div>
+        </div>
+        <div class="model-stat"><div class="k">GPU</div><div class="v">${(latest.gpu_util_pct || 0).toFixed(0)}%</div></div>
+        <div class="model-stat"><div class="k">Temperature</div><div class="v">${(latest.gpu_temp_c || 0).toFixed(0)}°C</div></div>
+        <div class="model-stat"><div class="k">Power</div><div class="v">${(latest.gpu_power_w || 0).toFixed(1)} W</div></div>
+        <div class="model-stat"><div class="k">CPU / Memory</div><div class="v">${(latest.cpu_util_pct || 0).toFixed(0)}% / ${(latest.mem_used_pct || 0).toFixed(0)}%</div></div>
+      </div>`;
+    }).join('');
+    document.getElementById('model-overview').innerHTML = overviewData.map(model => {
+      const latest = model.latest || {};
+      return `<div class="model-card">
+        <div class="model-identity">
+          <div class="model-name">${esc(model.name)}</div>
+          <div class="model-status"><span class="status-dot ${model.online ? 'online' : ''}"></span>${model.online ? 'Online' : 'Offline'} · ${esc(model.node_name)} · ${formatUptime(model.info.service_uptime_seconds)}</div>
+        </div>
+        <div class="model-stat"><div class="k">KV cache</div><div class="v">${(latest.kv_cache_pct || 0).toFixed(1)}%</div></div>
+        <div class="model-stat"><div class="k">Requests</div><div class="v">${(latest.running || 0).toFixed(0)} / ${(latest.waiting || 0).toFixed(0)}</div></div>
+        <div class="model-stat"><div class="k">Throughput</div><div class="v">${((latest.prompt_tps || 0) + (latest.gen_tps || 0)).toFixed(0)} tok/s</div></div>
+        <div class="model-stat"><div class="k">Tokens 24h</div><div class="v">${formatTokens(model.tokens.last_24h.total_tokens)}</div></div>
+      </div>`;
+    }).join('');
+    updateHostMetricVisibility();
+    if (selectedModel === 'all') refreshInfo();
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+document.querySelector('.model-switcher').addEventListener('click', event => {
+  const button = event.target.closest('button[data-model]');
+  if (!button) return;
+    selectedModel = button.dataset.model;
+    document.querySelectorAll('.model-switcher button').forEach(item => item.classList.toggle('active', item === button));
+    const model = overviewData.find(item => item.key === selectedModel);
+    const label = selectedModel === 'all' ? 'All model instances' : (model?.name || button.textContent);
+    document.getElementById('view-subtitle').textContent = `${label} · refreshing every 2s`;
+    updateHostMetricVisibility();
+    refresh();
+    refresh24h();
+    refreshInfo();
+    refreshTokens();
+});
+
+refreshOverview();
+refresh();
+refresh24h();
+refreshInfo();
+refreshTokens();
+setInterval(refresh, 2000);
+setInterval(refresh24h, 30000);
+setInterval(refreshInfo, 10000);
+setInterval(refreshTokens, 15000);
+setInterval(refreshOverview, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "listen": "127.0.0.1:9090",
+  "node": {
+    "key": "collector",
+    "name": "Fleet Collector",
+    "models": []
+  },
+  "peers": [
+    {
+      "key": "node-a",
+      "hostname": "node-a.example.net",
+      "url": "http://192.0.2.10:9090"
+    },
+    {
+      "key": "node-b",
+      "hostname": "node-b.example.net",
+      "url": "http://192.0.2.11:9090"
+    }
+  ]
+}

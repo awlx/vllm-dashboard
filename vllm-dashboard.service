@@ -1,0 +1,29 @@
+[Unit]
+Description=vLLM Fleet Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vllm-dashboard
+Group=vllm-dashboard
+Environment=VLLM_DASHBOARD_CONFIG=/etc/vllm-dashboard/dashboard.json
+ExecStart=/usr/local/bin/vllm-dashboard
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
