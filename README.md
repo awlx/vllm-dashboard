@@ -33,19 +33,95 @@ collector.
 The fleet collector can run without vLLM or an NVIDIA GPU when its local
 `models` list is empty.
 
+## Deployment Modes
+
+### Single Node
+
+Use one dashboard process when all vLLM servers run on the same machine. That
+process scrapes every locally configured model and serves both the web UI and
+JSON API. No collector or peer configuration is needed.
+
+```text
+Browser -> Dashboard -> vLLM /metrics
+              -> nvidia-smi, /proc, systemd
+```
+
+One node can monitor multiple local vLLM servers. Add one entry to `node.models`
+for each metrics endpoint, such as ports 8000 and 8001.
+
+### Multiple Nodes
+
+Use an agent-and-collector layout when vLLM servers run on different machines:
+
+1. Run one dashboard process on each compute node with its local models in
+  `node.models`. These processes are the node agents.
+2. Run one additional dashboard process as the fleet collector. Give it an
+  empty `node.models` list and add every node agent under `peers`.
+3. Open only the collector UI. It combines peer data and forwards
+  model-specific API requests to the correct node.
+
+```text
+                 +-> Node A agent -> local vLLM server(s)
+Browser -> Fleet collector
+                 +-> Node B agent -> local vLLM server(s)
+```
+
+Node agents do not push data. The collector polls their HTTP APIs, so it must be
+able to reach each configured peer URL. Keep node-agent endpoints on a trusted
+network; expose only the collector through an authenticated reverse proxy.
+
 ## Quick Start
+
+Build the same binary for either deployment mode:
 
 ```sh
 git clone https://github.com/awlx/vllm-dashboard.git
 cd vllm-dashboard
 go test ./...
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard .
+```
+
+### Single-Node Quick Start
+
+Create the node configuration, add all local vLLM metrics endpoints to its
+`models` list, and start the dashboard:
+
+```sh
 cp config.node.example.json dashboard.json
 VLLM_DASHBOARD_CONFIG=./dashboard.json ./vllm-dashboard
 ```
 
-Open `http://localhost:9090` after adjusting `listen` in `dashboard.json` if
-necessary.
+Open `http://<node-address>:9090`. If you run the browser on the same machine,
+use `http://localhost:9090`.
+
+### Multi-Node Quick Start
+
+On each compute node, copy the binary and use a unique node configuration:
+
+```sh
+cp config.node.example.json dashboard.json
+# Edit node.key, node.hostname, listen, and node.models for this machine.
+VLLM_DASHBOARD_CONFIG=./dashboard.json ./vllm-dashboard
+```
+
+Verify each agent from the collector machine before continuing:
+
+```sh
+curl http://<node-a-address>:9090/api/overview
+curl http://<node-b-address>:9090/api/overview
+```
+
+On the collector machine, configure the reachable agent URLs and start another
+copy of the same binary:
+
+```sh
+cp config.example.json dashboard.json
+# Edit peers so each URL points to a running node agent.
+VLLM_DASHBOARD_CONFIG=./dashboard.json ./vllm-dashboard
+```
+
+Open `http://localhost:9090` on the collector machine, or use the collector's
+reverse-proxied URL. You do not need to open the individual node dashboards.
 
 ## Configuration
 
