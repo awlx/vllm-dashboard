@@ -49,6 +49,10 @@ Browser -> Dashboard -> vLLM /metrics
 One node can monitor multiple local vLLM servers. Add one entry to `node.models`
 for each metrics endpoint, such as ports 8000 and 8001.
 
+![Single-node dashboard showing one Qwen model](docs/images/single-node-dashboard.png)
+
+_Single-node view with sample data._
+
 ### Multiple Nodes
 
 Use an agent-and-collector layout when vLLM servers run on different machines:
@@ -69,6 +73,10 @@ Browser -> Fleet collector
 Node agents do not push data. The collector polls their HTTP APIs, so it must be
 able to reach each configured peer URL. Keep node-agent endpoints on a trusted
 network; expose only the collector through an authenticated reverse proxy.
+
+![Multi-node dashboard showing Qwen and DeepSeek models across two nodes](docs/images/multi-node-dashboard.png)
+
+_Fleet view with sample data._
 
 ## Quick Start
 
