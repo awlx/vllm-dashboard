@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ type Sample struct {
 	GPUUtilPct        float64 `json:"gpu_util_pct"`
 	GPUTempC          float64 `json:"gpu_temp_c"`
 	GPUPowerW         float64 `json:"gpu_power_w"`
+	GPUClockMHz       float64 `json:"gpu_clock_mhz"`
 	TTFTMs            float64 `json:"ttft_ms"`
 	InterTokenMs      float64 `json:"inter_token_ms"`
 	E2ELatencyMs      float64 `json:"e2e_latency_ms"`
@@ -42,6 +44,7 @@ type Sample struct {
 	SpecAcceptPct     float64 `json:"spec_accept_pct"`
 	SpecMeanAccepted  float64 `json:"spec_mean_accepted"`
 	CPUUtilPct        float64 `json:"cpu_util_pct"`
+	CPUClockMHz       float64 `json:"cpu_clock_mhz"`
 	MemUsedPct        float64 `json:"mem_used_pct"`
 	MemUsedGB         float64 `json:"mem_used_gb"`
 	MemTotalGB        float64 `json:"mem_total_gb"`
@@ -324,20 +327,53 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 	return metrics, scanner.Err()
 }
 
-func scrapeGPU() (util, temp, power float64) {
+func scrapeGPU() (util, temp, power, clock float64) {
 	out, err := exec.Command("nvidia-smi",
-		"--query-gpu=utilization.gpu,temperature.gpu,power.draw",
+		"--query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.current.graphics",
 		"--format=csv,noheader,nounits").Output()
 	if err != nil {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	parts := strings.Split(strings.TrimSpace(string(out)), ",")
-	if len(parts) >= 3 {
+	if len(parts) >= 4 {
 		util, _ = strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
 		temp, _ = strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
 		power, _ = strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+		clock, _ = strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
 	}
 	return
+}
+
+func averageClockKHz(values []string) float64 {
+	var total float64
+	var count int
+	for _, value := range values {
+		clock, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || clock <= 0 {
+			continue
+		}
+		total += clock
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count) / 1000
+}
+
+func scrapeCPUClockMHz() float64 {
+	paths, err := filepath.Glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")
+	if err != nil {
+		return 0
+	}
+	values := make([]string, 0, len(paths))
+	for _, path := range paths {
+		value, err := os.ReadFile(path)
+		if err == nil {
+			values = append(values, string(value))
+		}
+	}
+	return averageClockKHz(values)
 }
 
 // scrapeCPUTimes reads aggregate CPU jiffies from /proc/stat. Deltas between
@@ -440,16 +476,18 @@ func scrapeNet() (rxBytes, txBytes float64) {
 }
 
 func poll() {
-	gpuUtil, gpuTemp, gpuPower := scrapeGPU()
+	gpuUtil, gpuTemp, gpuPower, gpuClock := scrapeGPU()
 	cpuTotal, cpuIdle := scrapeCPUTimes()
+	cpuClock := scrapeCPUClockMHz()
 	memUsedGB, memTotalGB, memUsedPct := scrapeMem()
 	netRx, netTx := scrapeNet()
 	now := time.Now()
 
 	shared := Sample{
 		Time:       now.UnixMilli(),
-		GPUUtilPct: gpuUtil, GPUTempC: gpuTemp, GPUPowerW: gpuPower,
-		MemUsedGB: memUsedGB, MemTotalGB: memTotalGB, MemUsedPct: memUsedPct,
+		GPUUtilPct: gpuUtil, GPUTempC: gpuTemp, GPUPowerW: gpuPower, GPUClockMHz: gpuClock,
+		CPUClockMHz: cpuClock,
+		MemUsedGB:   memUsedGB, MemTotalGB: memTotalGB, MemUsedPct: memUsedPct,
 	}
 
 	if !lastSystemScrape.IsZero() {
@@ -805,7 +843,9 @@ func aggregateSampleSets(sources [][]Sample) []Sample {
 			result[index].GPUUtilPct = max(result[index].GPUUtilPct, sample.GPUUtilPct)
 			result[index].GPUTempC = max(result[index].GPUTempC, sample.GPUTempC)
 			result[index].GPUPowerW += sample.GPUPowerW
+			result[index].GPUClockMHz = max(result[index].GPUClockMHz, sample.GPUClockMHz)
 			result[index].CPUUtilPct = max(result[index].CPUUtilPct, sample.CPUUtilPct)
+			result[index].CPUClockMHz = max(result[index].CPUClockMHz, sample.CPUClockMHz)
 			result[index].MemUsedPct = max(result[index].MemUsedPct, sample.MemUsedPct)
 			result[index].NetRxMbps += sample.NetRxMbps
 			result[index].NetTxMbps += sample.NetTxMbps

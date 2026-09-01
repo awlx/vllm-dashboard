@@ -181,7 +181,7 @@
     color: var(--muted);
     margin-left: 2px;
   }
-  canvas { width: 100%; height: 140px; display: block; cursor: crosshair; }
+  canvas { width: 100%; height: 140px; display: block; cursor: default; }
   .tooltip {
     position: absolute;
     display: none;
@@ -361,6 +361,11 @@
       <div class="legend" id="legend_sys"></div>
     </div>
     <div class="chart-card">
+      <div class="label">Clock Speed (MHz)</div>
+      <div class="chart-wrap"><canvas id="chart_clocks"></canvas><div class="tooltip" id="tooltip_clocks"></div></div>
+      <div class="legend" id="legend_clocks"></div>
+    </div>
+    <div class="chart-card">
       <div class="label">Network (Mbps)</div>
       <div class="chart-wrap"><canvas id="chart_net"></canvas><div class="tooltip" id="tooltip_net"></div></div>
       <div class="legend" id="legend_net"></div>
@@ -408,6 +413,11 @@
       <div class="label">CPU / Memory %</div>
       <div class="chart-wrap"><canvas id="chart_sys_24h"></canvas><div class="tooltip" id="tooltip_sys_24h"></div></div>
       <div class="legend" id="legend_sys_24h"></div>
+    </div>
+    <div class="chart-card">
+      <div class="label">Clock Speed (MHz)</div>
+      <div class="chart-wrap"><canvas id="chart_clocks_24h"></canvas><div class="tooltip" id="tooltip_clocks_24h"></div></div>
+      <div class="legend" id="legend_clocks_24h"></div>
     </div>
     <div class="chart-card">
       <div class="label">Network (Mbps)</div>
@@ -557,15 +567,27 @@ class LineChart {
       return;
     }
 
-    // crosshair
+    // Plot-bounded guide and point markers.
     const x = plotLeft + (this.hoverIndex / (len - 1)) * plotWidth;
     ctx.beginPath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.strokeStyle = 'rgba(139,152,169,0.45)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
-    ctx.moveTo(x, 0); ctx.lineTo(x, h);
+    ctx.moveTo(x, plotTop); ctx.lineTo(x, plotBottom);
     ctx.stroke();
-    ctx.setLineDash([]);
+
+    visibleSeries.forEach(s => {
+      const v = s.data[this.hoverIndex];
+      if (!Number.isFinite(v)) return;
+      const maxVal = maxOf(s);
+      const y = plotBottom - (Math.min(v, maxVal) / maxVal) * plotHeight;
+      ctx.beginPath();
+      ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = s.color;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#121821';
+      ctx.stroke();
+    });
 
     // tooltip content
     const t = new Date(this.times[this.hoverIndex]);
@@ -597,6 +619,7 @@ const charts = {
   latency: new LineChart('chart_latency', 'tooltip_latency', 'legend_latency'),
   spec: new LineChart('chart_spec', 'tooltip_spec', 'legend_spec'),
   sys: new LineChart('chart_sys', 'tooltip_sys', 'legend_sys'),
+  clocks: new LineChart('chart_clocks', 'tooltip_clocks', 'legend_clocks'),
   net: new LineChart('chart_net', 'tooltip_net', 'legend_net'),
 };
 
@@ -609,6 +632,7 @@ const charts24h = {
   latency: new LineChart('chart_latency_24h', 'tooltip_latency_24h', 'legend_latency_24h'),
   spec: new LineChart('chart_spec_24h', 'tooltip_spec_24h', 'legend_spec_24h'),
   sys: new LineChart('chart_sys_24h', 'tooltip_sys_24h', 'legend_sys_24h'),
+  clocks: new LineChart('chart_clocks_24h', 'tooltip_clocks_24h', 'legend_clocks_24h'),
   net: new LineChart('chart_net_24h', 'tooltip_net_24h', 'legend_net_24h'),
 };
 
@@ -665,6 +689,11 @@ function renderSet(set, data) {
     { data: data.map(d => d.cpu_util_pct), color: '#38bdf8', label: 'CPU' },
     { data: data.map(d => d.mem_used_pct), color: '#c084fc', label: 'mem' }
   ], times, { fixedMax: 100, unit: '%' });
+
+  set.clocks.update([
+    { data: data.map(d => d.gpu_clock_mhz), color: '#22d3ee', label: 'GPU clock' },
+    { data: data.map(d => d.cpu_clock_mhz), color: '#fbbf24', label: 'CPU avg clock' },
+  ], times, { minMax: 1000, unit: ' MHz' });
 
   set.net.update([
     { data: data.map(d => d.net_rx_mbps), color: '#34d399', label: 'rx' },
@@ -748,6 +777,11 @@ function renderAllSet(set, sharedData, histories) {
     ...nodeSeries('cpu_util_pct', 'primary', 'CPU'),
     ...nodeSeries('mem_used_pct', 'secondary', 'memory'),
   ], times, { fixedMax: 100, unit: '%' });
+
+  set.clocks.update([
+    ...nodeSeries('gpu_clock_mhz', 'primary', 'GPU clock'),
+    ...nodeSeries('cpu_clock_mhz', 'secondary', 'CPU avg clock'),
+  ], times, { minMax: 1000, unit: ' MHz' });
 
   set.net.update([
     ...nodeSeries('net_rx_mbps', 'primary', 'rx'),

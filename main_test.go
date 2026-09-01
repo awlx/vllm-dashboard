@@ -93,11 +93,18 @@ func TestCombinedOverviewScopesPeerModels(t *testing.T) {
 
 func TestAggregateSampleSetsCombinesNodes(t *testing.T) {
 	got := aggregateSampleSets([][]Sample{
-		{{Time: 100, Running: 1, GPUUtilPct: 40, GPUPowerW: 20}},
-		{{Time: 100, Running: 2, GPUUtilPct: 70, GPUPowerW: 30}},
+		{{Time: 100, Running: 1, GPUUtilPct: 40, GPUPowerW: 20, GPUClockMHz: 1800, CPUClockMHz: 2800}},
+		{{Time: 100, Running: 2, GPUUtilPct: 70, GPUPowerW: 30, GPUClockMHz: 2400, CPUClockMHz: 3900}},
 	})
-	if len(got) != 1 || got[0].Running != 3 || got[0].GPUUtilPct != 70 || got[0].GPUPowerW != 50 {
+	if len(got) != 1 || got[0].Running != 3 || got[0].GPUUtilPct != 70 || got[0].GPUPowerW != 50 || got[0].GPUClockMHz != 2400 || got[0].CPUClockMHz != 3900 {
 		t.Fatalf("unexpected aggregate: %+v", got)
+	}
+}
+
+func TestAverageClockKHz(t *testing.T) {
+	got := averageClockKHz([]string{"2808000\n", "3900000", "offline", "0"})
+	if got != 3354 {
+		t.Fatalf("average clock = %.0f MHz, want 3354", got)
 	}
 }
 

@@ -15,8 +15,8 @@ collector.
 - Globally scoped `node/model` identifiers
 - Two-second live charts and one-minute 24-hour in-memory history
 - Throughput, latency, request, KV-cache, prefix-cache, and speculative-decoding metrics
-- GPU utilization, temperature, and power from `nvidia-smi`
-- Host CPU, memory, and network utilization from Linux `/proc`
+- GPU utilization, temperature, power, and core clock from `nvidia-smi`
+- Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
 - vLLM command-line and systemd service metadata
 - Peer aggregation with graceful handling of unavailable nodes
 - Strict JSON configuration and no automatic network discovery
