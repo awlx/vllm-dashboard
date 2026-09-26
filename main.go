@@ -6,8 +6,10 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -95,6 +97,7 @@ type DashboardConfig struct {
 }
 
 type ModelState struct {
+	ModelName             string
 	History               []Sample
 	LongHistory           []Sample
 	LastLongSample        time.Time
@@ -111,6 +114,7 @@ type ModelState struct {
 	LastSpecAccepted      float64
 	LastSpecDraft         float64
 	LastScrape            time.Time
+	LastPollSuccess       bool
 }
 
 type ModelOverview struct {
@@ -133,6 +137,7 @@ type ServerInfo struct {
 	MaxNumBatchedTokens  string `json:"max_num_batched_tokens"`
 	SpeculativeConfig    string `json:"speculative_config"`
 	VLLMVersion          string `json:"vllm_version"`
+	KernelVersion        string `json:"kernel_version"`
 	ServiceActiveSince   string `json:"service_active_since"`
 	ServiceUptimeSeconds int64  `json:"service_uptime_seconds"`
 	ServiceRestarts      string `json:"service_restarts"`
@@ -151,6 +156,7 @@ var (
 	lastNetRx, lastNetTx      float64
 	lastSystemScrape          time.Time
 	vllmVersion               string
+	kernelVersion             string
 	config                    DashboardConfig
 	models                    []ModelConfig
 	modelStates               map[string]*ModelState
@@ -159,6 +165,7 @@ var (
 
 var metricLineRe = regexp.MustCompile(`^([a-zA-Z0-9_:]+)(\{[^}]*\})?\s+([0-9eE\.\+\-]+)\s*$`)
 var configKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+var kernelVersionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+~-]{0,127}$`)
 var hostnameRe = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$`)
 
 func defaultConfig() DashboardConfig {
@@ -224,8 +231,14 @@ func loadConfig(path string) (DashboardConfig, error) {
 }
 
 func configureRuntime(cfg DashboardConfig) {
+	mu.Lock()
+	defer mu.Unlock()
 	config = cfg
 	models = cfg.Node.Models
+	latestHostSample = Sample{}
+	lastCPUTotal, lastCPUIdle = 0, 0
+	lastNetRx, lastNetTx = 0, 0
+	lastSystemScrape = time.Time{}
 	modelStates = make(map[string]*ModelState, len(models))
 	for _, model := range models {
 		modelStates[model.Key] = &ModelState{}
@@ -303,6 +316,9 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("metrics endpoint returned %s", resp.Status)
+	}
 
 	metrics := map[string]float64{}
 	scanner := bufio.NewScanner(resp.Body)
@@ -317,14 +333,27 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 			continue
 		}
 		name := m[1]
+		if !strings.HasPrefix(name, "vllm:") {
+			continue
+		}
 		val, err := strconv.ParseFloat(m[3], 64)
-		if err != nil {
+		if err != nil || math.IsNaN(val) || math.IsInf(val, 0) {
 			continue
 		}
 		// sum across label variants (e.g. request_success_total has one line per finished_reason)
-		metrics[name] += val
+		total := metrics[name] + val
+		if math.IsInf(total, 0) {
+			return nil, fmt.Errorf("metrics value overflow")
+		}
+		metrics[name] = total
 	}
-	return metrics, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(metrics) == 0 {
+		return nil, fmt.Errorf("no finite vllm metrics found")
+	}
+	return metrics, nil
 }
 
 func scrapeGPU() (util, temp, power, clock float64) {
@@ -342,6 +371,23 @@ func scrapeGPU() (util, temp, power, clock float64) {
 		clock, _ = strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
 	}
 	return
+}
+
+func parseKernelVersion(release string) string {
+	release = strings.TrimSpace(release)
+	if !kernelVersionRe.MatchString(release) {
+		return ""
+	}
+	return release
+}
+
+// readKernelVersion is read once: the running kernel only changes on reboot.
+func readKernelVersion() string {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return ""
+	}
+	return parseKernelVersion(string(data))
 }
 
 func averageClockKHz(values []string) float64 {
@@ -506,22 +552,33 @@ func poll() {
 	lastNetRx, lastNetTx = netRx, netTx
 	lastSystemScrape = now
 
+	mu.Lock()
+	latestHostSample = shared
+	mu.Unlock()
+
 	for _, model := range models {
 		pollModel(model, shared, now)
 	}
 }
 
 func pollModel(model ModelConfig, shared Sample, now time.Time) {
+	identity, _ := buildModelIdentity(model)
 	metrics, err := scrapeVLLM(model.MetricsURL)
+	mu.Lock()
+	defer mu.Unlock()
 	state := modelStates[model.Key]
+	state.ModelName = modelDisplayName(identity, model.Name)
 	s := shared
+	// Model timestamps describe completion of this scrape, not the beginning
+	// of a potentially long sequential poll of all configured models.
+	now = time.Now()
+	s.Time = now.UnixMilli()
+	state.LastPollSuccess = err == nil
 
 	if err != nil {
 		log.Printf("%s scrape error: %v", model.Key, err)
-		mu.Lock()
 		s.PromptTokensCum = state.LastPromptTokens
 		s.GenTokensCum = state.LastGenTokens
-		mu.Unlock()
 	} else {
 		s.Running = metrics["vllm:num_requests_running"]
 		s.Waiting = metrics["vllm:num_requests_waiting"]
@@ -548,7 +605,6 @@ func pollModel(model ModelConfig, shared Sample, now time.Time) {
 		specAccepted := metrics["vllm:spec_decode_num_accepted_tokens_total"]
 		specDraft := metrics["vllm:spec_decode_num_draft_tokens_total"]
 
-		mu.Lock()
 		if !state.LastScrape.IsZero() {
 			dt := now.Sub(state.LastScrape).Seconds()
 			if dt > 0 {
@@ -595,10 +651,8 @@ func pollModel(model ModelConfig, shared Sample, now time.Time) {
 		state.LastSpecAccepted, state.LastSpecDraft = specAccepted, specDraft
 		state.LastCompletedRequests = s.CompletedRequests
 		state.LastScrape = now
-		mu.Unlock()
 	}
 
-	mu.Lock()
 	state.History = append(state.History, s)
 	if len(state.History) > historySize {
 		state.History = state.History[len(state.History)-historySize:]
@@ -610,7 +664,6 @@ func pollModel(model ModelConfig, shared Sample, now time.Time) {
 		}
 		state.LastLongSample = now
 	}
-	mu.Unlock()
 }
 
 // tokensInWindow returns cumulative prompt/gen token deltas over the trailing
@@ -645,16 +698,36 @@ func counterDelta(previous, current float64) float64 {
 	return current - previous
 }
 
-// findVLLMPid locates the running "vllm serve" API server process.
+// servesVLLMOnPort matches `vllm serve` and `python -m vllm.entrypoints... serve`
+// argv exactly, so shell wrappers and neighbouring ports do not match.
+func servesVLLMOnPort(args []string, port string) bool {
+	isVLLM, isServe, onPort := false, false, false
+	for index, arg := range args {
+		if filepath.Base(arg) == "vllm" || strings.HasPrefix(arg, "vllm.entrypoints") {
+			isVLLM = true
+		}
+		if arg == "serve" {
+			isServe = true
+		}
+		if arg == "--port="+port || (arg == "--port" && index+1 < len(args) && args[index+1] == port) {
+			onPort = true
+		}
+	}
+	return isVLLM && isServe && onPort
+}
+
+// findVLLMPid locates the running vLLM API server process, including containers.
 func findVLLMPid(port string) (string, error) {
-	out, err := exec.Command("pgrep", "-af", "vllm serve").Output()
+	if port == "" {
+		return "", os.ErrNotExist
+	}
+	out, err := exec.Command("pgrep", "-f", "vllm").Output()
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 1 && strings.Contains(line, "--port "+port) {
-			return fields[0], nil
+	for _, pid := range strings.Fields(string(out)) {
+		if args, err := readCmdlineArgs(pid); err == nil && servesVLLMOnPort(args, port) {
+			return pid, nil
 		}
 	}
 	return "", os.ErrNotExist
@@ -749,7 +822,7 @@ func systemdProperty(model ModelConfig, prop string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func buildServerInfo(model ModelConfig) ServerInfo {
+func buildModelIdentity(model ModelConfig) (ServerInfo, string) {
 	info := ServerInfo{}
 	processPID := ""
 
@@ -773,22 +846,59 @@ func buildServerInfo(model ModelConfig) ServerInfo {
 		}
 	}
 
+	if info.ServedModelName == "" {
+		info.ServedModelName = discoverServedModelName(model.MetricsURL)
+	}
+	return info, processPID
+}
+
+func discoverServedModelName(metricsURL string) string {
+	endpoint, err := url.Parse(metricsURL)
+	if err != nil || !strings.HasSuffix(endpoint.Path, "/metrics") {
+		return ""
+	}
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/metrics") + "/v1/models"
+	endpoint.RawPath = ""
+	client := http.Client{Timeout: 1500 * time.Millisecond, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(endpoint.String())
+	if err != nil {
+		return ""
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ""
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil || len(payload.Data) != 1 {
+		return ""
+	}
+	return payload.Data[0].ID
+}
+
+func buildServerInfo(model ModelConfig) ServerInfo {
+	info, processPID := buildModelIdentity(model)
 	activeSince := systemdProperty(model, "ActiveEnterTimestamp")
 	info.ServiceActiveSince = activeSince
-	if activeSince != "" {
-		if t, terr := time.Parse("Mon 2006-01-02 15:04:05 MST", activeSince); terr == nil {
-			info.ServiceUptimeSeconds = int64(time.Since(t).Seconds())
-		}
-	}
-	if info.ServiceUptimeSeconds == 0 && processPID != "" {
+	// Process age is authoritative; oneshot compose units stay active across container restarts.
+	if processPID != "" {
 		if out, err := exec.Command("ps", "-o", "etimes=", "-p", processPID).Output(); err == nil {
 			if elapsed, parseErr := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); parseErr == nil {
 				info.ServiceUptimeSeconds = elapsed
 			}
 		}
 	}
+	if info.ServiceUptimeSeconds == 0 && activeSince != "" {
+		if t, terr := time.Parse("Mon 2006-01-02 15:04:05 MST", activeSince); terr == nil {
+			info.ServiceUptimeSeconds = int64(time.Since(t).Seconds())
+		}
+	}
 	info.ServiceRestarts = systemdProperty(model, "NRestarts")
 	info.VLLMVersion = vllmVersion
+	info.KernelVersion = kernelVersion
 
 	return info
 }
@@ -1043,6 +1153,7 @@ func main() {
 	if out, err := exec.Command("vllm", "--version").Output(); err == nil {
 		vllmVersion = strings.TrimSpace(string(out))
 	}
+	kernelVersion = readKernelVersion()
 	for _, model := range models {
 		modelStates[model.Key].CounterStartedAt = modelProcessStartedAt(model)
 	}
@@ -1053,6 +1164,8 @@ func main() {
 			time.Sleep(scrapeEvery)
 		}
 	}()
+
+	registerMetricsHandlers(http.DefaultServeMux)
 
 	http.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		samples, err := metricsForRequest(requestedModel(r), false)

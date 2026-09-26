@@ -908,6 +908,7 @@ async function refreshInfo() {
       ['batch tokens', info.max_num_batched_tokens || '\u2013'],
       ['spec-decode', spec],
       ['vLLM', info.vllm_version || '\u2013'],
+      ['kernel', info.kernel_version || '\u2013'],
       ['uptime', formatUptime(info.service_uptime_seconds)],
       ['restarts', info.service_restarts || '0'],
     ];
@@ -965,7 +966,7 @@ async function refreshOverview() {
       return `<div class="model-card">
         <div class="model-identity">
           <div class="model-name">${esc(node.node_name)}</div>
-          <div class="model-status"><span class="status-dot ${node.online ? 'online' : ''}"></span>${node.online ? 'Online' : 'Offline'}</div>
+          <div class="model-status"><span class="status-dot ${node.online ? 'online' : ''}"></span>${node.online ? 'Online' : 'Offline'}${node.info && node.info.kernel_version ? ` · kernel ${esc(node.info.kernel_version)}` : ''}</div>
         </div>
         <div class="model-stat"><div class="k">GPU</div><div class="v">${(latest.gpu_util_pct || 0).toFixed(0)}%</div></div>
         <div class="model-stat"><div class="k">Temperature</div><div class="v">${(latest.gpu_temp_c || 0).toFixed(0)}°C</div></div>

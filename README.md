@@ -209,6 +209,56 @@ The embedded UI uses these read-only JSON endpoints:
 Use `model=all` for aggregate metrics. Fleet model keys use the
 `node/model` form.
 
+## Prometheus and Grafana
+
+`GET /metrics` exports Prometheus telemetry for the local node and configured
+peers. `GET /api/telemetry` is a local-only snapshot used by collectors; upgrade
+both collector and agents for fleet export. Existing JSON/UI endpoints are unchanged.
+Only GET and HEAD are accepted on the new routes. No additional listen port is needed.
+
+Metrics use the `vllm_dashboard_` prefix, stable `node_key` and `model_key` labels,
+and a `model` label containing the discovered served-model name (the same name
+resolution as the UI, falling back to the configured name/key). Names are cached
+during background polling and forwarded by agents; Prometheus requests do not
+run process discovery. The `node` label uses the configured short hostname or
+display name, matching the UI, with the config key as a fallback. A changed node
+or runtime model name intentionally starts new series.
+Units are seconds, bytes, hertz and ratios (0–1). Host metrics are emitted once per node,
+not per model. Token/request/preemption totals are engine counters that may reset.
+Latency gauges are poll-interval averages, not histograms or percentiles. This is
+not a raw vLLM metrics proxy and does not preserve engine histogram buckets/labels.
+
+`vllm_dashboard_node_up` reports telemetry transport availability. Models export
+`model_up=0` after a failed poll or 30 seconds without fresh data; stale/failed
+model performance series are omitted rather than replaced with zero. Unreachable
+peers emit `node_up=0` and no model series. Timestamp metrics permit freshness alerts.
+`vllm_dashboard_node_info{kernel_version=...}` (value 1) carries the running kernel
+release; nodes running an older agent omit it.
+Peer requests share a four-second deadline and do not recursively follow peers.
+Hardware collection failures inherit the existing dashboard's zero-value behavior;
+for example, a collector without a GPU reports zero GPU values, not sensor health.
+
+Scrape the **collector only** for fleet totals to avoid counting the same agents
+twice. Example Prometheus configuration (replace the documentation address):
+
+```yaml
+scrape_configs:
+  - job_name: vllm-dashboard
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['192.0.2.10:9090']
+```
+
+Import [docs/grafana-dashboard.json](docs/grafana-dashboard.json) through Grafana
+**Dashboards → New → Import**, select your Prometheus datasource, then select the
+scrape job and one collector instance. The 18 panels cover availability, freshness,
+throughput, queueing, latency, KV/prefix/speculation, requests/preemptions, host
+telemetry and token usage. Node/model filters are multi-select. Counter rates need at least two
+Prometheus scrapes. Grafana does not scrape this HTTP endpoint itself: Prometheus
+(or a compatible service such as VictoriaMetrics) must collect it first.
+
 ## Data Retention
 
 History is held in bounded memory and resets when the process restarts. This is
