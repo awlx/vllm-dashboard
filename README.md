@@ -15,7 +15,7 @@ collector.
 - Globally scoped `node/model` identifiers
 - Two-second live charts and one-minute 24-hour in-memory history
 - Throughput, latency, request, KV-cache, prefix-cache, and speculative-decoding metrics
-- GPU utilization, temperature, power, and core clock from `nvidia-smi`
+- GPU utilization, temperature, power, and core clock from `nvidia-smi` or `amd-smi`
 - Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
 - vLLM command-line and systemd service metadata
 - Peer aggregation with graceful handling of unavailable nodes
@@ -27,10 +27,10 @@ collector.
 - Linux on monitored compute nodes
 - Go 1.26 or newer to build
 - A vLLM server exposing its Prometheus-compatible `/metrics` endpoint
-- `nvidia-smi` for GPU metrics
+- `nvidia-smi` or `amd-smi` for GPU metrics
 - `systemctl` for optional service metadata
 
-The fleet collector can run without vLLM or an NVIDIA GPU when its local
+The fleet collector can run without vLLM or a GPU when its local
 `models` list is empty.
 
 ## Deployment Modes
