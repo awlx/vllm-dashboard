@@ -143,6 +143,35 @@ type ServerInfo struct {
 	ServiceRestarts      string `json:"service_restarts"`
 }
 
+// AmdSmiOutput models amd-smi JSON output
+type AmdSmiOutput struct {
+	GpuData []struct {
+		GPU   int `json:"gpu"`
+		Usage struct {
+			GfxActivity struct {
+				Value float64 `json:"value"`
+			} `json:"gfx_activity"`
+		} `json:"usage"`
+		Power struct {
+			SocketPower struct {
+				Value float64 `json:"value"`
+			} `json:"socket_power"`
+		} `json:"power"`
+		Clock struct {
+			Gfx0 struct {
+				Clk struct {
+					Value float64 `json:"value"`
+				} `json:"clk"`
+			} `json:"gfx_0"`
+		} `json:"clock"`
+		Temperature struct {
+			Edge struct {
+				Value float64 `json:"value"`
+			} `json:"edge"`
+		} `json:"temperature"`
+	} `json:"gpu_data"`
+}
+
 const (
 	historySize  = 150 // 5 min at 2s resolution
 	scrapeEvery  = 2 * time.Second
@@ -419,6 +448,14 @@ func tensorfoldHealthCounters(metricsURL string) (tensorfoldHealth, error) {
 }
 
 func scrapeGPU() (util, temp, power, clock float64) {
+	util, temp, power, clock = scrapeNvidiaGPU()
+	if util != 0 || temp != 0 || power != 0 || clock != 0 {
+		return util, temp, power, clock
+	}
+	return scrapeAMDGPU()
+}
+
+func scrapeNvidiaGPU() (util, temp, power, clock float64) {
 	out, err := exec.Command("nvidia-smi",
 		"--query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.current.graphics",
 		"--format=csv,noheader,nounits").Output()
@@ -433,6 +470,27 @@ func scrapeGPU() (util, temp, power, clock float64) {
 		clock, _ = strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
 	}
 	return
+}
+
+
+func scrapeAMDGPU() (util, temp, power, clock float64) {
+	out, err := exec.Command("amd-smi", "metric", "--usage", "--temp", "--power", "--clock", "--json").Output()
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	var data AmdSmiOutput
+	if err := json.Unmarshal(out, &data); err != nil || len(data.GpuData) == 0 {
+		return 0, 0, 0, 0
+	}
+	count := float64(len(data.GpuData))
+	var totalUtil, totalTemp, totalPower, totalClock float64
+	for _, gpu := range data.GpuData {
+		totalUtil += gpu.Usage.GfxActivity.Value
+		totalTemp += gpu.Temperature.Edge.Value
+		totalPower += gpu.Power.SocketPower.Value
+		totalClock += gpu.Clock.Gfx0.Clk.Value
+	}
+	return totalUtil / count, totalTemp / count, totalPower, totalClock / count
 }
 
 func parseKernelVersion(release string) string {
