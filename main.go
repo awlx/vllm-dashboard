@@ -321,6 +321,7 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 	}
 
 	metrics := map[string]float64{}
+	tensorfold := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -333,6 +334,9 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 			continue
 		}
 		name := m[1]
+		if strings.HasPrefix(name, "tensorfold:") {
+			tensorfold = true
+		}
 		if !strings.HasPrefix(name, "vllm:") {
 			continue
 		}
@@ -353,7 +357,65 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 	if len(metrics) == 0 {
 		return nil, fmt.Errorf("no finite vllm metrics found")
 	}
+	if tensorfold {
+		// TensorFold /metrics counts only finished requests; /health adds running replies.
+		health, err := tensorfoldHealthCounters(metricsURL)
+		if err != nil {
+			return nil, fmt.Errorf("tensorfold health: %w", err)
+		}
+		metrics["vllm:generation_tokens_total"] = math.Max(health.completion, metrics["vllm:generation_tokens_total"])
+		// TensorFold exports no vllm:prefix_cache_* counters; same token-based semantics via /health.
+		if _, ok := metrics["vllm:prefix_cache_queries_total"]; !ok && health.prompt > 0 && health.cached >= 0 {
+			metrics["vllm:prefix_cache_queries_total"] = health.prompt
+			metrics["vllm:prefix_cache_hits_total"] = math.Min(health.cached, health.prompt)
+		}
+	}
 	return metrics, nil
+}
+
+type tensorfoldHealth struct {
+	completion, prompt, cached float64
+}
+
+func tensorfoldHealthCounters(metricsURL string) (tensorfoldHealth, error) {
+	var result tensorfoldHealth
+	endpoint, err := url.Parse(metricsURL)
+	if err != nil || !strings.HasSuffix(endpoint.Path, "/metrics") {
+		return result, fmt.Errorf("metrics URL has no /metrics path")
+	}
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/metrics") + "/health"
+	endpoint.RawPath = ""
+	client := http.Client{Timeout: 1500 * time.Millisecond, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(endpoint.String())
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("health endpoint returned %s", response.Status)
+	}
+	var payload struct {
+		CompletionTokensTotal *float64 `json:"completion_tokens_total"`
+		PromptTokensTotal     *float64 `json:"prompt_tokens_total"`
+		CachedTokensTotal     *float64 `json:"cached_tokens_total"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return result, err
+	}
+	if payload.CompletionTokensTotal == nil {
+		return result, fmt.Errorf("health has no completion_tokens_total")
+	}
+	valid := func(v *float64) bool { return v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) && *v >= 0 }
+	if !valid(payload.CompletionTokensTotal) {
+		return result, fmt.Errorf("invalid completion_tokens_total")
+	}
+	result.completion = *payload.CompletionTokensTotal
+	result.cached = -1
+	if valid(payload.PromptTokensTotal) && valid(payload.CachedTokensTotal) {
+		result.prompt = *payload.PromptTokensTotal
+		result.cached = *payload.CachedTokensTotal
+	}
+	return result, nil
 }
 
 func scrapeGPU() (util, temp, power, clock float64) {

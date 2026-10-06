@@ -380,6 +380,55 @@ func TestLocalTelemetryUsesCachedRuntimeName(t *testing.T) {
 	}
 }
 
+func TestScrapeVLLMUsesTensorFoldLiveGenerationTokens(t *testing.T) {
+	healthBody := `{"ok": true, "backend": "tensorfold", "completion_tokens_total": 1250}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/metrics":
+			_, _ = w.Write([]byte("tensorfold:generation_tokens_total 1000\nvllm:generation_tokens_total{model_name=\"m\"} 1000\n"))
+		case "/health":
+			_, _ = w.Write([]byte(healthBody))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	metrics, err := scrapeVLLM(server.URL + "/metrics")
+	if err != nil || metrics["vllm:generation_tokens_total"] != 1250 {
+		t.Fatalf("live tokens not used: %v %v", metrics, err)
+	}
+	if _, ok := metrics["vllm:prefix_cache_queries_total"]; ok {
+		t.Fatalf("prefix cache derived without health counters: %v", metrics)
+	}
+	healthBody = `{"ok": true, "completion_tokens_total": 1250, "prompt_tokens_total": 4000, "cached_tokens_total": 3000}`
+	metrics, err = scrapeVLLM(server.URL + "/metrics")
+	if err != nil || metrics["vllm:prefix_cache_queries_total"] != 4000 || metrics["vllm:prefix_cache_hits_total"] != 3000 {
+		t.Fatalf("prefix cache not derived from health: %v %v", metrics, err)
+	}
+	healthBody = `{"ok": true}`
+	if _, err := scrapeVLLM(server.URL + "/metrics"); err == nil {
+		t.Fatal("accepted TensorFold health without live counter")
+	}
+}
+
+func TestScrapeVLLMIgnoresHealthForVLLM(t *testing.T) {
+	healthCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			healthCalls++
+			return
+		}
+		_, _ = w.Write([]byte("vllm:generation_tokens_total{model_name=\"m\"} 42\n"))
+	}))
+	defer server.Close()
+
+	metrics, err := scrapeVLLM(server.URL + "/metrics")
+	if err != nil || metrics["vllm:generation_tokens_total"] != 42 || healthCalls != 0 {
+		t.Fatalf("vLLM scrape changed: %v %v health=%d", metrics, err, healthCalls)
+	}
+}
+
 func TestScrapeVLLMRejectsErrorAndNonMetrics(t *testing.T) {
 	for _, body := range []string{"server error", "<html>not metrics</html>", "other_metric 1\n"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
