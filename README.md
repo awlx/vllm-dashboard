@@ -40,12 +40,11 @@ echo "deb [signed-by=/etc/apt/keyrings/vllm-dashboard.gpg] https://awlx.github.i
   | sudo tee /etc/apt/sources.list.d/vllm-dashboard.list
 sudo apt update
 sudo apt install vllm-dashboard
-echo '{}' | sudo tee /etc/vllm-dashboard/dashboard.json
-sudo systemctl restart vllm-dashboard
 ```
 
-The service starts only when `/etc/vllm-dashboard/dashboard.json` exists. An
-empty JSON object (`{}`) selects all defaults.
+The service starts at once with the defaults. It listens on port 9090 on all
+interfaces. To change the settings, create `/etc/vllm-dashboard/dashboard.json`
+and restart the service. See [Deployment](docs/deployment.md#apt-package).
 
 ### Docker
 

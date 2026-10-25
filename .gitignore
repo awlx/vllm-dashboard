@@ -3,3 +3,6 @@
 dashboard.json
 *.db
 *.log
+/dist/
+/upgrade-test/
+*.deb

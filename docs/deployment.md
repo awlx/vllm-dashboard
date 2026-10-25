@@ -19,9 +19,25 @@ The package installs these files:
 The package creates the `vllm-dashboard` system user. It adds the user to the
 `video` and `render` groups if they exist.
 
-The package does not create or change `/etc/vllm-dashboard/dashboard.json`.
-The service starts only when this file exists. The package enables the
-service. An upgrade restarts it.
+The package enables and starts the service. An upgrade restarts it. The
+configuration file `/etc/vllm-dashboard/dashboard.json` is optional. Without
+it, the service uses the defaults and listens on port 9090 on all interfaces.
+
+The package does not create or change the configuration file. Install,
+upgrade, and removal do not ask about it and do not replace it. To use a
+configuration, start from an example and restart the service:
+
+```sh
+sudo install -m 0640 -o root -g vllm-dashboard \
+  /usr/share/vllm-dashboard/config.node.example.json \
+  /etc/vllm-dashboard/dashboard.json
+sudoedit /etc/vllm-dashboard/dashboard.json
+sudo systemctl restart vllm-dashboard
+```
+
+The service runs as `vllm-dashboard`. `nvidia-smi`, `ps`, `pgrep`, and
+`systemctl show` work without extra privileges. `amd-smi` needs the `video`
+and `render` groups for the GPU device nodes.
 
 To install a downloaded package file, run
 `sudo apt install ./vllm-dashboard_<version>_<arch>.deb`.
