@@ -194,7 +194,9 @@ file value.
   all polls in that minute. Latency and speculative-decoding points use only
   polls that had activity. Counters use the last poll of the minute.
 - The browser reads the interval from `GET /api/settings` and refreshes at
-  the same rate.
+  the same rate. It sends a new request only after the previous response
+  arrives. It stops refreshing while the browser tab is hidden. The 24-hour
+  charts refresh once per minute.
 - Use the same interval on all agents and the collector. Fleet charts combine
   node series sample by sample.
 - A short interval increases the load on the vLLM `/metrics` endpoint and on
