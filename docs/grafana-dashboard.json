@@ -118,7 +118,7 @@
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 8,
+        "w": 6,
         "h": 3
       },
       "datasource": {
@@ -190,9 +190,9 @@
       "title": "Model scrape health",
       "type": "stat",
       "gridPos": {
-        "x": 8,
+        "x": 6,
         "y": 0,
-        "w": 8,
+        "w": 6,
         "h": 3
       },
       "datasource": {
@@ -203,7 +203,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_up{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}}",
+          "legendFormat": "{{node}} · {{model}}",
           "instant": true
         }
       ],
@@ -264,9 +264,9 @@
       "title": "Host sample age",
       "type": "stat",
       "gridPos": {
-        "x": 16,
+        "x": 12,
         "y": 0,
-        "w": 8,
+        "w": 6,
         "h": 3
       },
       "datasource": {
@@ -315,7 +315,67 @@
           "titleSize": 12,
           "valueSize": 22
         }
-      }
+      },
+      "description": "Time since the latest host sample of each node."
+    },
+    {
+      "id": 34,
+      "title": "Model scrape age",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_min(time() - vllm_dashboard_model_last_success_timestamp_seconds{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}, 0)",
+          "legendFormat": "{{node}} · {{model}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "graphMode": "none",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        }
+      },
+      "description": "Time since the last successful scrape of each model. The dashboard marks a model as down after 30 seconds without a successful scrape."
     },
     {
       "id": 20,
@@ -348,7 +408,7 @@
         {
           "refId": "A",
           "expr": "rate(vllm_dashboard_model_generation_tokens_total{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}[$__rate_interval])",
-          "legendFormat": "{{model}}"
+          "legendFormat": "{{node}} · {{model}}"
         }
       ],
       "fieldConfig": {
@@ -393,7 +453,7 @@
         {
           "refId": "A",
           "expr": "rate(vllm_dashboard_model_prompt_tokens_total{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}[$__rate_interval])",
-          "legendFormat": "{{model}}"
+          "legendFormat": "{{node}} · {{model}}"
         }
       ],
       "fieldConfig": {
@@ -438,12 +498,12 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_requests_running{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}} running"
+          "legendFormat": "{{node}} · {{model}} running"
         },
         {
           "refId": "B",
           "expr": "vllm_dashboard_model_requests_waiting{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}} waiting"
+          "legendFormat": "{{node}} · {{model}} waiting"
         }
       ],
       "fieldConfig": {
@@ -482,7 +542,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_ttft_average_seconds{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}}",
+          "legendFormat": "{{node}} · {{model}}",
           "instant": false,
           "range": true
         }
@@ -543,7 +603,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_itl_average_seconds{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"} * 1000",
-          "legendFormat": "{{model}}",
+          "legendFormat": "{{node}} · {{model}}",
           "instant": false,
           "range": true
         }
@@ -591,7 +651,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_e2e_average_seconds{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}}",
+          "legendFormat": "{{node}} · {{model}}",
           "instant": false,
           "range": true
         }
@@ -658,7 +718,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_kv_cache_usage_ratio{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}}"
+          "legendFormat": "{{node}} · {{model}}"
         }
       ],
       "fieldConfig": {
@@ -704,7 +764,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_prefix_cache_hit_ratio{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}} prefix (cumulative)"
+          "legendFormat": "{{node}} · {{model}} prefix (cumulative)"
         }
       ],
       "fieldConfig": {
@@ -749,7 +809,7 @@
         {
           "refId": "A",
           "expr": "vllm_dashboard_model_speculative_acceptance_ratio{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}",
-          "legendFormat": "{{model}} speculative"
+          "legendFormat": "{{node}} · {{model}} speculative"
         }
       ],
       "fieldConfig": {
@@ -807,12 +867,12 @@
         {
           "refId": "A",
           "expr": "rate(vllm_dashboard_model_requests_completed_total{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}[$__rate_interval])",
-          "legendFormat": "{{model}} completed"
+          "legendFormat": "{{node}} · {{model}} completed"
         },
         {
           "refId": "B",
           "expr": "rate(vllm_dashboard_model_preemptions_total{job=\"$job\",instance=\"$instance\",node=~\"$node\",model=~\"$model\"}[$__rate_interval])",
-          "legendFormat": "{{model}} preemptions"
+          "legendFormat": "{{node}} · {{model}} preemptions"
         }
       ],
       "fieldConfig": {
@@ -1129,6 +1189,143 @@
               "sort": "desc"
             }
           }
+        },
+        {
+          "id": 35,
+          "title": "GPU clock",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 70,
+            "w": 8,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "vllm_dashboard_node_gpu_clock_hertz{job=\"$job\",instance=\"$instance\",node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "hertz",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "description": "Sampled GPU clock. With more than one GPU, the value is the average of all GPUs."
+        },
+        {
+          "id": 36,
+          "title": "CPU clock",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 8,
+            "y": 70,
+            "w": 8,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "vllm_dashboard_node_cpu_clock_hertz{job=\"$job\",instance=\"$instance\",node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "hertz",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "description": "Average sampled CPU clock of all cores."
+        },
+        {
+          "id": 37,
+          "title": "Host memory utilization",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 16,
+            "y": 70,
+            "w": 8,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "vllm_dashboard_node_memory_used_ratio{job=\"$job\",instance=\"$instance\",node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              },
+              "min": 0,
+              "max": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "description": "Used host memory as a ratio of total memory."
         }
       ]
     },

@@ -651,3 +651,7 @@ Grafana reads from Prometheus. It does not scrape the dashboard.
    and `model` variables accept more than one value.
 
 Counter rates need at least two Prometheus scrapes before the panels show data.
+
+When you add a metric, also add a panel to the dashboard.
+`TestGrafanaDashboardUsesExportedMetrics` reads the dashboard file. It fails
+when a query uses a metric or a label that `/metrics` does not export.
