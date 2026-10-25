@@ -63,3 +63,18 @@ func TestRegisterRoutesLocalPeerAndUnknownKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeReportsLocalIdentity(t *testing.T) {
+	cfg := config.Config{Node: config.Node{Key: "gpu-a", Hostname: "gpu-a.example.net"}}
+	mux := http.NewServeMux()
+	Register(mux, fleet.New(cfg, store.New(cfg), process.NewCache("", "")))
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/node", nil))
+	var info fleet.NodeInfo
+	if err := json.NewDecoder(recorder.Body).Decode(&info); err != nil {
+		t.Fatal(err)
+	}
+	if info != (fleet.NodeInfo{Key: "gpu-a", Hostname: "gpu-a.example.net"}) {
+		t.Fatalf("node = %+v", info)
+	}
+}

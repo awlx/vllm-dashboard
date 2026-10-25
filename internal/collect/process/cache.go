@@ -13,7 +13,7 @@ type identity struct {
 	pid  string
 }
 
-// Cache keeps process and service data. Process discovery runs pgrep, ps,
+// Cache keeps process and service data. Process discovery reads /proc and runs ps
 // and systemctl, so polls and API requests must not start new processes
 // every time.
 type Cache struct {

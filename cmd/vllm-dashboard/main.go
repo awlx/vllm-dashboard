@@ -9,12 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/awlx/vllm-dashboard/internal/api"
 	"github.com/awlx/vllm-dashboard/internal/collect/gpu"
 	"github.com/awlx/vllm-dashboard/internal/collect/host"
 	"github.com/awlx/vllm-dashboard/internal/collect/process"
+	"github.com/awlx/vllm-dashboard/internal/collect/vllm"
 	"github.com/awlx/vllm-dashboard/internal/config"
+	"github.com/awlx/vllm-dashboard/internal/discovery"
 	"github.com/awlx/vllm-dashboard/internal/fleet"
 	"github.com/awlx/vllm-dashboard/internal/metrics"
 	"github.com/awlx/vllm-dashboard/internal/poller"
@@ -23,15 +26,22 @@ import (
 )
 
 func main() {
-	cfg, err := config.Load(os.Getenv("VLLM_DASHBOARD_CONFIG"))
+	cfg, err := config.Load(os.Getenv(config.EnvConfig))
 	if err != nil {
 		log.Fatal(err)
 	}
-	if value := os.Getenv(config.PollIntervalEnv); value != "" {
-		if _, err := config.ParsePollInterval(value); err != nil {
-			log.Fatalf("%s: %v", config.PollIntervalEnv, err)
+	var discover func() []config.Model
+	if cfg.Node.DiscoveryEnabled() {
+		discover = func() []config.Model {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			return discovery.Discover(ctx, "/proc")
 		}
-		cfg.PollInterval = value
+		cfg.Node.Models = discovery.Merge(cfg.Node.Models, discover())
+	}
+	cfg.Node.Models = discovery.NameModels(cfg.Node.Models, vllm.ServedModelName)
+	for _, model := range cfg.Node.Models {
+		log.Printf("model %s at %s", model.Key, model.MetricsURL)
 	}
 	st := store.New(cfg)
 	gpus := gpu.NewSampler(cfg.Interval())
@@ -48,11 +58,16 @@ func main() {
 	procs := process.NewCache(st.VLLMVersion, st.KernelVersion)
 
 	go gpus.Run(context.Background())
-	go poller.New(st, gpus, procs).Run()
+	go poller.New(st, gpus, procs, discover).Run()
+
+	f := fleet.New(cfg, st, procs)
+	if len(cfg.Peers) > 0 {
+		go f.RunResolver()
+	}
 
 	mux := http.NewServeMux()
-	metrics.Register(mux, cfg, st)
-	api.Register(mux, fleet.New(cfg, st, procs))
+	metrics.Register(mux, cfg, st, f.Peers)
+	api.Register(mux, f)
 	ui, err := web.Handler()
 	if err != nil {
 		log.Fatal(err)

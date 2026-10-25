@@ -47,9 +47,15 @@ func CurrentSettings(st *store.Store) Settings {
 }
 
 // Register adds the /api/metrics, /api/metrics/long, /api/info, /api/tokens,
-// /api/settings, and /api/overview handlers to mux. All of them use GzipJSON.
+// /api/settings, /api/overview, and /api/node handlers to mux. All of them
+// use GzipJSON.
 func Register(mux *http.ServeMux, f *fleet.Fleet) {
 	st := f.Store()
+	mux.HandleFunc("/api/node", GzipJSON(func(w http.ResponseWriter, r *http.Request) {
+		node := st.Node()
+		WriteJSON(w, fleet.NodeInfo{Key: node.Key, Name: node.Name, Hostname: node.Hostname})
+	}))
+
 	mux.HandleFunc("/api/metrics", GzipJSON(func(w http.ResponseWriter, r *http.Request) {
 		samples, err := f.MetricsForRequest(r.Context(), requestedModel(r), false)
 		if err != nil {

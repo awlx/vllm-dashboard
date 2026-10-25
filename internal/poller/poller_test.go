@@ -74,11 +74,33 @@ func TestSlowGPUScrapeDoesNotBlockPoll(t *testing.T) {
 	})
 
 	start := time.Now()
-	New(st, gpus, process.NewCache("", "")).Poll()
+	New(st, gpus, process.NewCache("", ""), nil).Poll()
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("poll took %v while the GPU tool was blocked", elapsed)
 	}
 	if samples := len(st.Samples("m", false)); samples != 1 {
 		t.Fatalf("history has %d samples, want 1", samples)
+	}
+}
+
+func TestDiscoverAddsModelsAndKeepsKnownKeys(t *testing.T) {
+	known := config.Model{Port: "8000"}
+	if err := config.CompleteModel(&known); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(config.Config{Node: config.Node{Key: "node", Models: []config.Model{known}}})
+	found := []config.Model{
+		{Key: "qwen", Name: "Qwen", MetricsURL: "http://127.0.0.1:8000/metrics", Port: "8000", Unit: "vllm-qwen.service"},
+		{Key: "coder", Name: "Coder", MetricsURL: "http://127.0.0.1:8001/metrics", Port: "8001"},
+	}
+	p := New(st, nil, process.NewCache("", ""), func() []config.Model { return found })
+	p.Discover()
+	p.Discover()
+	models := st.Models()
+	if len(models) != 2 || models[0].Key != "port-8000" || models[0].Unit != "vllm-qwen.service" || models[1].Key != "coder" {
+		t.Fatalf("models = %+v", models)
+	}
+	if _, ok := st.LocalModelKey("node/coder"); !ok {
+		t.Fatal("discovered model has no state")
 	}
 }

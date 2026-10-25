@@ -5,46 +5,34 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/awlx/vllm-dashboard/internal/collect/vllm"
 	"github.com/awlx/vllm-dashboard/internal/config"
+	"github.com/awlx/vllm-dashboard/internal/discovery"
 	"github.com/awlx/vllm-dashboard/internal/sample"
 )
 
-// servesVLLMOnPort matches `vllm serve` and `python -m vllm.entrypoints... serve`
-// argv exactly, so shell wrappers and neighbouring ports do not match.
+// servesVLLMOnPort reports whether args start a vLLM or TensorFold API
+// server on port. A shell wrapper and a neighbouring port do not match.
 func servesVLLMOnPort(args []string, port string) bool {
-	isVLLM, isServe, onPort := false, false, false
-	for index, arg := range args {
-		if filepath.Base(arg) == "vllm" || strings.HasPrefix(arg, "vllm.entrypoints") {
-			isVLLM = true
-		}
-		if arg == "serve" {
-			isServe = true
-		}
-		if arg == "--port="+port || (arg == "--port" && index+1 < len(args) && args[index+1] == port) {
-			onPort = true
-		}
-	}
-	return isVLLM && isServe && onPort
+	server, ok := discovery.ParseCmdline(args)
+	return ok && server.Port == port
 }
 
-// findVLLMPid locates the running vLLM API server process, including containers.
+// procRoot is a variable so that tests can replace it.
+var procRoot = "/proc"
+
+// findVLLMPid returns the PID of the parent server process on port.
 func findVLLMPid(port string) (string, error) {
 	if port == "" {
 		return "", os.ErrNotExist
 	}
-	out, err := exec.Command("pgrep", "-f", "vllm").Output()
-	if err != nil {
-		return "", err
-	}
-	for _, pid := range strings.Fields(string(out)) {
-		if args, err := readCmdlineArgs(pid); err == nil && servesVLLMOnPort(args, port) {
-			return pid, nil
+	for _, server := range discovery.Scan(procRoot) {
+		if server.Port == port {
+			return strconv.Itoa(server.PID), nil
 		}
 	}
 	return "", os.ErrNotExist
@@ -70,27 +58,14 @@ func StartedAt(model config.Model) time.Time {
 // readCmdlineArgs reads a process's argv from /proc/<pid>/cmdline, which is
 // NUL-separated and therefore avoids shell-quoting ambiguity entirely.
 func readCmdlineArgs(pid string) ([]string, error) {
-	data, err := os.ReadFile("/proc/" + pid + "/cmdline")
+	data, err := os.ReadFile(procRoot + "/" + pid + "/cmdline")
 	if err != nil {
 		return nil, err
 	}
-	var args []string
-	for _, p := range strings.Split(string(data), "\x00") {
-		if p != "" {
-			args = append(args, p)
-		}
-	}
-	return args, nil
+	return discovery.SplitCmdline(data), nil
 }
 
-func argValue(args []string, flag string) string {
-	for i, a := range args {
-		if a == flag && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
-}
+var argValue = discovery.FlagValue
 
 func speculativeConfig(args []string) string {
 	if config := argValue(args, "--speculative-config"); config != "" {
@@ -129,16 +104,39 @@ func DisplayName(info sample.ServerInfo, fallback string) string {
 	return fallback
 }
 
+// systemctl is a variable so that tests can replace it.
+var systemctl = func(args ...string) ([]byte, error) {
+	return exec.Command("systemctl", args...).Output()
+}
+
+// systemdProperty reads prop of the model unit. Discovery sets UserUnit from
+// the cgroup of the process. For a configured unit, the system manager is
+// asked first. If it does not know the unit, the user manager is asked.
 func systemdProperty(model config.Model, prop string) string {
-	args := []string{"show", model.Unit, "--property=" + prop, "--value"}
-	if model.UserUnit {
-		args = append([]string{"--user"}, args...)
-	}
-	out, err := exec.Command("systemctl", args...).Output()
-	if err != nil {
+	if model.Unit == "" {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	scopes := [][]string{nil, {"--user"}}
+	if model.UserUnit {
+		scopes = scopes[1:]
+	}
+	for _, scope := range scopes {
+		args := append(append([]string(nil), scope...), "show", model.Unit, "--property=LoadState,"+prop)
+		out, err := systemctl(args...)
+		if err != nil {
+			continue
+		}
+		values := map[string]string{}
+		for _, line := range strings.Split(string(out), "\n") {
+			if key, value, found := strings.Cut(strings.TrimSpace(line), "="); found {
+				values[key] = value
+			}
+		}
+		if values["LoadState"] == "loaded" {
+			return values[prop]
+		}
+	}
+	return ""
 }
 
 // Identity reads the model arguments from the vLLM process and returns its PID.

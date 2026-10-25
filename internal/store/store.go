@@ -39,8 +39,9 @@ const (
 	LongSize      = 24 * 60
 )
 
-// Store holds the state of the local node. The node and the model list do
-// not change after New. One lock protects all model states and the host sample.
+// Store holds the state of the local node. The node does not change after
+// New. Discovery can add and remove models. One lock protects the model
+// list, all model states, and the host sample.
 type Store struct {
 	node     config.Node
 	models   []config.Model
@@ -101,13 +102,51 @@ func (s *Store) Node() config.Node {
 
 // Models returns the local model configurations.
 func (s *Store) Models() []config.Model {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.models
+}
+
+// SetModels replaces the model list. It adds an empty state for each new
+// key, deletes the state of each removed key, and returns the new models.
+func (s *Store) SetModels(models []config.Model) []config.Model {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var added []config.Model
+	keep := make(map[string]bool, len(models))
+	for _, model := range models {
+		keep[model.Key] = true
+		if s.states[model.Key] == nil {
+			s.states[model.Key] = &ModelState{}
+			added = append(added, model)
+		}
+	}
+	for key := range s.states {
+		if !keep[key] {
+			delete(s.states, key)
+		}
+	}
+	s.models = append([]config.Model(nil), models...)
+	return added
 }
 
 // LocalModelKey accepts a bare or node-scoped key of a local model.
 func (s *Store) LocalModelKey(key string) (string, bool) {
-	prefix := s.node.Key + "/"
-	key = strings.TrimPrefix(key, prefix)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.localModelKey(key)
+}
+
+// ModelConfig returns the local model for key, or the first model.
+func (s *Store) ModelConfig(key string) config.Model {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.modelConfig(key)
+}
+
+// localModelKey and modelConfig need the lock held by the caller.
+func (s *Store) localModelKey(key string) (string, bool) {
+	key = strings.TrimPrefix(key, s.node.Key+"/")
 	for _, model := range s.models {
 		if model.Key == key {
 			return key, true
@@ -116,9 +155,8 @@ func (s *Store) LocalModelKey(key string) (string, bool) {
 	return "", false
 }
 
-// ModelConfig returns the local model for key, or the first model.
-func (s *Store) ModelConfig(key string) config.Model {
-	if localKey, ok := s.LocalModelKey(key); ok {
+func (s *Store) modelConfig(key string) config.Model {
+	if localKey, ok := s.localModelKey(key); ok {
 		key = localKey
 	}
 	for _, model := range s.models {
@@ -132,11 +170,13 @@ func (s *Store) ModelConfig(key string) config.Model {
 	return config.Model{}
 }
 
-// Update runs fn with the write lock held.
+// Update runs fn with the write lock held. It does nothing for an unknown key.
 func (s *Store) Update(key string, fn func(*ModelState)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fn(s.states[key])
+	if state := s.states[key]; state != nil {
+		fn(state)
+	}
 }
 
 // SetHost stores the latest host sample.
@@ -186,6 +226,9 @@ func (s *Store) Status(key string) ModelStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	state := s.states[key]
+	if state == nil {
+		return ModelStatus{}
+	}
 	status := ModelStatus{LastScrape: state.LastScrape, Tokens: usageForState(state)}
 	if len(state.History) > 0 {
 		status.Latest = state.History[len(state.History)-1]
