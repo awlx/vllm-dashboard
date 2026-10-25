@@ -6,11 +6,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
+    color-scheme: dark;
     --bg: #0b0f14;
     --panel: #121821;
     --panel-border: #1f2937;
+    --panel-border-hover: #334155;
     --text: #e5e7eb;
-    --muted: #8b98a9;
+    --muted: #94a3b8;
     --accent: #22d3ee;
     --accent2: #a78bfa;
     --good: #34d399;
@@ -51,6 +53,8 @@
   .topbar .sub { margin-bottom: 0; }
   .model-switcher {
     display: inline-flex;
+    flex-wrap: wrap;
+    gap: 2px;
     padding: 3px;
     border: 1px solid var(--panel-border);
     border-radius: 8px;
@@ -66,11 +70,15 @@
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
+    transition: color .15s, background-color .15s;
   }
+  .model-switcher button:hover { color: var(--text); background: rgba(255,255,255,0.05); }
   .model-switcher button.active {
     color: #071217;
     background: var(--accent);
   }
+  .model-switcher button.active:hover { color: #071217; background: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   [hidden] { display: none !important; }
   .overview-grid {
     display: grid;
@@ -87,7 +95,9 @@
     border-radius: 8px;
     padding: 14px 16px;
     background: linear-gradient(160deg, var(--panel), #0e141c);
+    transition: border-color .15s;
   }
+  .model-card:hover, .card:hover, .chart-card:hover { border-color: var(--panel-border-hover); }
   .model-name { font-size: 14px; font-weight: 650; }
   .model-status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; margin-top: 5px; }
   .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
@@ -105,6 +115,7 @@
     border: 1px solid var(--panel-border);
     border-radius: 14px;
     padding: 16px 18px;
+    transition: border-color .15s;
   }
   .card .label {
     font-size: 11px;
@@ -129,6 +140,8 @@
     border: 1px solid var(--panel-border);
     border-radius: 14px;
     padding: 16px 18px;
+    min-width: 0;
+    transition: border-color .15s;
   }
   .chart-card .label {
     font-size: 11px;
@@ -156,6 +169,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
+    font: inherit;
     font-size: 13px;
     font-weight: 500;
     color: var(--text);
@@ -163,9 +177,13 @@
     border: 1px solid var(--panel-border);
     border-radius: 8px;
     padding: 4px 10px 4px 8px;
+    text-align: left;
+    max-width: 100%;
     cursor: pointer;
     user-select: none;
+    transition: background-color .15s, border-color .15s, opacity .15s;
   }
+  .legend-item:hover { background: rgba(255,255,255,0.08); border-color: var(--panel-border-hover); }
   .legend-item.hidden {
     opacity: .42;
   }
@@ -181,26 +199,39 @@
     font-variant-numeric: tabular-nums;
     color: var(--muted);
     margin-left: 2px;
+    white-space: nowrap;
   }
-  canvas { width: 100%; height: 140px; display: block; cursor: default; }
+  canvas {
+    width: 100%;
+    height: 140px;
+    display: block;
+    cursor: crosshair;
+    border-radius: 6px;
+    touch-action: pan-y;
+  }
   .tooltip {
     position: absolute;
     display: none;
-    top: 6px;
-    background: #1a2330;
-    border: 1px solid var(--panel-border);
+    top: 0;
+    left: 0;
+    background: rgba(26,35,48,0.96);
+    border: 1px solid var(--panel-border-hover);
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 7px 10px;
     font-size: 12px;
-    line-height: 1.6;
+    line-height: 1.55;
     pointer-events: none;
-    box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
     white-space: nowrap;
     z-index: 10;
   }
-  .tooltip .t-time { color: var(--muted); margin-bottom: 4px; font-size: 11px; }
-  .tooltip .t-row { display: flex; align-items: center; gap: 6px; }
-  .tooltip .t-swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+  .tooltip .t-time { color: var(--muted); margin-bottom: 3px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .tooltip .t-ago { opacity: .8; }
+  .tooltip .t-row { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; column-gap: 7px; color: var(--muted); }
+  .tooltip .t-row b { color: var(--text); font-weight: 600; text-align: right; padding-left: 10px; font-variant-numeric: tabular-nums; }
+  .tooltip .t-row.near { color: var(--text); }
+  .tooltip .t-row.near b { color: #fff; }
+  .tooltip .t-swatch { width: 8px; height: 8px; border-radius: 2px; }
   .section-title {
     font-size: 14px;
     font-weight: 600;
@@ -231,7 +262,7 @@
   }
   .badge .k { color: var(--muted); }
   .badge .v { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .legend-side { color: var(--muted); font-size: 10px; margin-left: 3px; }
+  .legend-side { color: var(--muted); font-size: 10px; margin-left: 3px; white-space: nowrap; }
   .card .value.good { color: var(--good); }
   .card .value.warn { color: var(--warn); }
   .card .value.bad { color: var(--bad); }
@@ -244,6 +275,10 @@
   .token-grid .card { padding: 12px 16px; }
   .token-grid .value { font-size: 20px; }
   .token-grid .sub-value { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    h1 .dot { animation: none; }
+    * { transition: none !important; }
+  }
   @media (max-width: 900px) {
     body { padding: 18px; }
     .topbar { flex-direction: column; }
@@ -253,8 +288,12 @@
     .charts { grid-template-columns: 1fr; }
   }
   @media (max-width: 520px) {
+    body { padding: 14px; }
     .model-switcher { width: 100%; }
     .model-switcher button { flex: 1; padding: 8px 6px; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .card .value { font-size: 24px; }
+    .chart-card { padding: 14px; }
   }
 </style>
 </head>
@@ -262,10 +301,10 @@
   <div class="topbar">
     <div>
       <h1><span class="dot"></span>vLLM Fleet Metrics</h1>
-      <div class="sub" id="view-subtitle">All model instances</div>
+      <div class="sub" id="view-subtitle" aria-live="polite">All model instances</div>
     </div>
     <div class="model-switcher" role="group" aria-label="Model view">
-      <button type="button" class="active" data-model="all">All models</button>
+      <button type="button" class="active" data-model="all" aria-pressed="true">All models</button>
     </div>
   </div>
 
@@ -462,6 +501,12 @@ class LineChart {
     this.legendKey = '';
     this.legendValues = [];
     this.canvas.__chart = this;
+    this.longRange = false;
+    const title = this.canvas.closest('.chart-card')?.querySelector('.label')?.textContent || 'Chart';
+    this.canvas.tabIndex = 0;
+    this.canvas.setAttribute('role', 'img');
+    this.canvas.setAttribute('aria-label', `${title} chart. Use the arrow keys to read values.`);
+    this.tooltip.setAttribute('aria-hidden', 'true');
     if (chartObserver) chartObserver.observe(this.canvas);
     if (chartResizeObserver) chartResizeObserver.observe(this.canvas);
 
@@ -474,21 +519,125 @@ class LineChart {
       this.requestRender();
     });
 
-    this.canvas.addEventListener('mousemove', (e) => {
+    // Pointer events cover mouse, pen, and touch. On touch, a tap or a drag
+    // along the chart shows the tooltip; vertical scrolling still works.
+    this.pointerY = null;
+    this.nearestId = null;
+    const track = (e) => {
       const len = this.times.length;
       if (len < 2) return;
       const rect = this.canvas.getBoundingClientRect();
-      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const geom = this.geom;
+      const left = geom ? geom.plotLeft : 0;
+      const width = geom ? geom.plotWidth : rect.width;
+      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left - left) / width));
       const index = Math.round(frac * (len - 1));
-      if (index === this.hoverIndex) return;
+      this.pointerY = e.clientY - rect.top;
+      const nearest = this.nearestSeries(index, this.pointerY);
+      if (index === this.hoverIndex && nearest === this.nearestId) {
+        this.placeTooltip();
+        return;
+      }
       this.hoverIndex = index;
+      this.nearestId = nearest;
       this.requestRender();
-    });
-    this.canvas.addEventListener('mouseleave', () => {
+    };
+    const clear = () => {
       this.hoverIndex = null;
+      this.nearestId = null;
       this.tooltip.style.display = 'none';
       this.requestRender();
+    };
+    this.canvas.addEventListener('pointermove', track);
+    this.canvas.addEventListener('pointerdown', track);
+    this.canvas.addEventListener('pointerleave', (e) => {
+      if (e.pointerType === 'mouse') clear();
     });
+    document.addEventListener('pointerdown', (e) => {
+      if (e.target !== this.canvas && this.hoverIndex !== null) clear();
+    });
+
+    // Keyboard: arrow keys move through the samples, Home and End jump to
+    // the ends, and Escape hides the tooltip.
+    this.canvas.addEventListener('keydown', (e) => {
+      const len = this.times.length;
+      if (len < 2) return;
+      const step = e.shiftKey ? 10 : 1;
+      const current = this.hoverIndex ?? len - 1;
+      let index = null;
+      if (e.key === 'ArrowLeft') index = Math.max(0, current - step);
+      else if (e.key === 'ArrowRight') index = Math.min(len - 1, current + step);
+      else if (e.key === 'Home') index = 0;
+      else if (e.key === 'End') index = len - 1;
+      else if (e.key === 'Escape') {
+        clear();
+        return;
+      }
+      if (index === null) return;
+      e.preventDefault();
+      this.hoverIndex = index;
+      this.pointerY = null;
+      this.nearestId = null;
+      this.requestRender();
+    });
+    this.canvas.addEventListener('focus', () => {
+      this.tooltip.setAttribute('aria-live', 'polite');
+      this.tooltip.removeAttribute('aria-hidden');
+      if (this.hoverIndex === null && this.times.length > 1) {
+        this.hoverIndex = this.times.length - 1;
+        this.requestRender();
+      }
+    });
+    this.canvas.addEventListener('blur', () => {
+      this.tooltip.removeAttribute('aria-live');
+      this.tooltip.setAttribute('aria-hidden', 'true');
+      clear();
+    });
+  }
+
+  // nearestSeries returns the id of the visible series whose point at index
+  // is closest to the pointer, if it is within 24 px.
+  nearestSeries(index, y) {
+    const geom = this.geom;
+    if (!geom || y === null) return null;
+    let best = null;
+    let bestDistance = 24;
+    for (const s of this.series) {
+      const id = s.id || s.label;
+      const v = s.data[index];
+      if (this.hiddenSeries.has(id) || !Number.isFinite(v)) continue;
+      const distance = Math.abs(geom.yOf(s, v) - y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  // placeTooltip puts the tooltip next to the guide line so that it does
+  // not cover the hovered point. It goes right of the line, else left of
+  // it, else on the side with more room. It can extend over the next card
+  // but stays inside the window, and follows the pointer vertically.
+  placeTooltip() {
+    if (this.hoverIndex === null || !this.geom || this.tooltip.style.display === 'none') return;
+    const { h, guideX } = this.geom;
+    const tw = this.tooltip.offsetWidth;
+    const th = this.tooltip.offsetHeight;
+    const rect = this.canvas.getBoundingClientRect();
+    const margin = 8, gap = 14;
+    const minLeft = margin - rect.left;
+    const maxLeft = document.documentElement.clientWidth - margin - rect.left - tw;
+    const right = guideX + gap;
+    const left = guideX - gap - tw;
+    let x;
+    if (right <= maxLeft) x = right;
+    else if (left >= minLeft) x = left;
+    else x = (maxLeft - guideX) > (guideX - minLeft) ? right : left;
+    x = Math.min(Math.max(minLeft, x), Math.max(minLeft, maxLeft));
+    const anchor = this.pointerY ?? h / 2;
+    const y = Math.min(Math.max(0, anchor - th / 2), Math.max(0, h - th));
+    this.tooltip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }
 
   update(series, times, opts) {
@@ -535,15 +684,14 @@ class LineChart {
         const id = s.id || s.label;
         const hidden = this.hiddenSeries.has(id);
         const side = s.axis === 'right' ? ' <span class="legend-side">right axis</span>' : '';
-        return `<span class="legend-item${hidden ? ' hidden' : ''}" data-series-id="${esc(id)}" aria-pressed="${!hidden}"><span class="legend-swatch" style="background:${s.color}"></span>${esc(s.label)}${side}<span class="legend-value"></span></span>`;
+        return `<button type="button" class="legend-item${hidden ? ' hidden' : ''}" data-series-id="${esc(id)}" aria-pressed="${!hidden}" title="${hidden ? 'Show' : 'Hide'} ${esc(s.label)}"><span class="legend-swatch" style="background:${s.color}" aria-hidden="true"></span>${esc(s.label)}${side}<span class="legend-value"></span></button>`;
       }).join('');
       this.legendValues = [...this.legendEl.querySelectorAll('.legend-value')];
     }
     series.forEach((s, i) => {
       const v = s.data[idx];
       const unit = s.axis === 'right' ? (opts.rightUnit || '') : (opts.unit || '');
-      const decimals = opts.smallValuePrecision && v < 0.1 ? 2 : (v < 10 ? 1 : 0);
-      setText(this.legendValues[i], v === undefined ? '–' : v.toFixed(decimals) + unit);
+      setText(this.legendValues[i], formatValue(v, unit, opts.smallValuePrecision));
     });
   }
 
@@ -575,6 +723,8 @@ class LineChart {
     const plotBottom = h - 14;
     const plotWidth = Math.max(1, plotRight - plotLeft);
     const plotHeight = Math.max(1, plotBottom - plotTop);
+    const yOf = (s, v) => plotBottom - (Math.min(v, maxOf(s)) / maxOf(s)) * plotHeight;
+    this.geom = { w, h, plotLeft, plotWidth, yOf, guideX: 0 };
 
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 1;
@@ -582,7 +732,7 @@ class LineChart {
       const y = plotBottom - (plotHeight * i / 3);
       ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotRight, y); ctx.stroke();
 
-      ctx.fillStyle = 'rgba(139,152,169,0.85)';
+      ctx.fillStyle = '#94a3b8';
       const leftVal = (leftMax * i / 3);
       ctx.textAlign = 'right';
       ctx.fillText(formatAxis(leftVal, opts.unit), plotLeft - 5, y + 3);
@@ -601,13 +751,13 @@ class LineChart {
     ctx.clip();
     visibleSeries.forEach(s => {
       if (s.data.length < 2) return;
-      const maxVal = maxOf(s);
       ctx.beginPath();
       ctx.strokeStyle = s.color;
       ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
       s.data.forEach((v, i) => {
         const x = plotLeft + (i / (s.data.length - 1)) * plotWidth;
-        const y = plotBottom - (Math.min(v, maxVal) / maxVal) * plotHeight;
+        const y = yOf(s, v);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.stroke();
@@ -629,47 +779,78 @@ class LineChart {
       return;
     }
 
-    // Plot-bounded guide and point markers.
-    const x = plotLeft + (this.hoverIndex / (len - 1)) * plotWidth;
-    ctx.beginPath();
-    ctx.strokeStyle = 'rgba(139,152,169,0.45)';
+    const guideX = plotLeft + (this.hoverIndex / (len - 1)) * plotWidth;
+    this.geom.guideX = guideX;
+
+    // Crosshair: a vertical guide at the sample and a horizontal guide at
+    // the nearest series point.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(203,213,225,0.45)';
     ctx.lineWidth = 1;
-    ctx.moveTo(x, plotTop); ctx.lineTo(x, plotBottom);
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(Math.round(guideX) + 0.5, plotTop); ctx.lineTo(Math.round(guideX) + 0.5, plotBottom);
+    const nearest = visibleSeries.find(s => (s.id || s.label) === this.nearestId);
+    if (nearest && Number.isFinite(nearest.data[this.hoverIndex])) {
+      const y = Math.round(yOf(nearest, nearest.data[this.hoverIndex])) + 0.5;
+      ctx.moveTo(plotLeft, y); ctx.lineTo(plotRight, y);
+    }
     ctx.stroke();
+    ctx.restore();
 
     visibleSeries.forEach(s => {
       const v = s.data[this.hoverIndex];
       if (!Number.isFinite(v)) return;
-      const maxVal = maxOf(s);
-      const y = plotBottom - (Math.min(v, maxVal) / maxVal) * plotHeight;
+      const isNearest = (s.id || s.label) === this.nearestId;
       ctx.beginPath();
-      ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+      ctx.arc(guideX, yOf(s, v), isNearest ? 5 : 3.5, 0, Math.PI * 2);
       ctx.fillStyle = s.color;
       ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = '#121821';
+      ctx.lineWidth = isNearest ? 2 : 1.5;
+      ctx.strokeStyle = isNearest ? '#e5e7eb' : '#121821';
       ctx.stroke();
     });
 
-    // tooltip content
-    const t = new Date(this.times[this.hoverIndex]);
-    const timeStr = t.toLocaleTimeString();
-    let html = `<div class="t-time">${timeStr}</div>`;
+    // Tooltip: time, then one row per visible series. The nearest series
+    // is marked.
+    const time = this.times[this.hoverIndex];
+    const t = new Date(time);
+    const timeStr = this.longRange
+      ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const latest = this.times[len - 1];
+    const ago = latest - time;
+    let html = `<div class="t-time">${timeStr}${ago > 0 ? ` <span class="t-ago">· ${formatAgo(ago)} earlier</span>` : ' <span class="t-ago">· latest</span>'}</div>`;
     visibleSeries.forEach(s => {
       const v = s.data[this.hoverIndex];
       const unit = s.axis === 'right' ? (opts.rightUnit || '') : (opts.unit || '');
-      const shown = v === undefined ? '–' : v.toFixed(v < 10 ? 2 : 0) + unit;
-      html += `<div class="t-row"><span class="t-swatch" style="background:${s.color}"></span>${esc(s.label)}: <b>${shown}</b></div>`;
+      const near = (s.id || s.label) === this.nearestId ? ' near' : '';
+      html += `<div class="t-row${near}"><span class="t-swatch" style="background:${s.color}"></span><span class="t-label">${esc(s.label)}</span><b>${formatValue(v, unit, opts.smallValuePrecision)}</b></div>`;
     });
     this.tooltip.innerHTML = html;
     this.tooltip.style.display = 'block';
-
-    // position tooltip, flipping to the left side near the right edge
-    const tw = this.tooltip.offsetWidth || 140;
-    let left = x + 12;
-    if (left + tw > w) left = x - tw - 12;
-    this.tooltip.style.left = Math.max(0, left) + 'px';
+    this.placeTooltip();
   }
+}
+
+function formatValue(v, unit = '', small = false) {
+  if (!Number.isFinite(v)) return '–';
+  const abs = Math.abs(v);
+  let text;
+  if (abs >= 10000) text = (v / 1000).toFixed(abs >= 100000 ? 0 : 1) + 'k';
+  else if (abs >= 100) text = v.toFixed(0);
+  else if (abs >= 10) text = v.toFixed(small ? 1 : 0);
+  else if (small && abs < 0.1 && abs > 0) text = v.toFixed(3);
+  else text = v.toFixed(abs < 1 && abs > 0 ? 2 : 1);
+  return text + unit;
+}
+
+function formatAgo(ms) {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
 function setText(el, text) {
@@ -708,6 +889,8 @@ const charts24h = {
   clocks: new LineChart('chart_clocks_24h', 'tooltip_clocks_24h', 'legend_clocks_24h'),
   net: new LineChart('chart_net_24h', 'tooltip_net_24h', 'legend_net_24h'),
 };
+
+Object.values(charts24h).forEach(chart => { chart.longRange = true; });
 
 let selectedModel = 'all';
 let overviewData = [];
@@ -1069,8 +1252,8 @@ async function refreshOverview() {
     if (switcher.__key !== switcherKey) {
       switcher.__key = switcherKey;
       switcher.innerHTML = [
-        `<button type="button" class="${selectedModel === 'all' ? 'active' : ''}" data-model="all">All models</button>`,
-        ...overviewData.map(model => `<button type="button" class="${selectedModel === model.key ? 'active' : ''}" data-model="${esc(model.key)}" title="${esc(model.node_name)}">${esc(model.name)}</button>`),
+        `<button type="button" class="${selectedModel === 'all' ? 'active' : ''}" data-model="all" aria-pressed="${selectedModel === 'all'}">All models</button>`,
+        ...overviewData.map(model => `<button type="button" class="${selectedModel === model.key ? 'active' : ''}" data-model="${esc(model.key)}" aria-pressed="${selectedModel === model.key}" title="${esc(model.node_name)}">${esc(model.name)}</button>`),
       ].join('');
     }
     const nodes = [...new Map(overviewData.map(model => [model.node_key, model])).values()];
@@ -1113,7 +1296,10 @@ document.querySelector('.model-switcher').addEventListener('click', event => {
   selectedModel = button.dataset.model;
   viewController.abort();
   viewController = new AbortController();
-  document.querySelectorAll('.model-switcher button').forEach(item => item.classList.toggle('active', item === button));
+  document.querySelectorAll('.model-switcher button').forEach(item => {
+    item.classList.toggle('active', item === button);
+    item.setAttribute('aria-pressed', String(item === button));
+  });
   const model = overviewData.find(item => item.key === selectedModel);
   const label = selectedModel === 'all' ? 'All model instances' : (model?.name || button.textContent);
   updateSubtitle(label);
