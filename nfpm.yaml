@@ -1,0 +1,41 @@
+name: vllm-dashboard
+arch: "${GOARCH}"
+platform: linux
+version: "${VERSION}"
+section: admin
+priority: optional
+maintainer: "awlx <6527744+awlx@users.noreply.github.com>"
+description: "vLLM fleet dashboard with embedded web UI"
+vendor: "awlx"
+homepage: "https://github.com/awlx/vllm-dashboard"
+license: "Apache-2.0"
+
+depends:
+  - procps
+
+contents:
+  - src: ./vllm-dashboard
+    dst: /usr/bin/vllm-dashboard
+    file_info:
+      mode: 0755
+
+  - src: ./packaging/vllm-dashboard.service
+    dst: /lib/systemd/system/vllm-dashboard.service
+    file_info:
+      mode: 0644
+
+  - src: ./config.example.json
+    dst: /usr/share/vllm-dashboard/config.example.json
+    file_info:
+      mode: 0644
+
+  - src: ./config.node.example.json
+    dst: /usr/share/vllm-dashboard/config.node.example.json
+    file_info:
+      mode: 0644
+
+scripts:
+  preinstall: ./packaging/preinstall.sh
+  postinstall: ./packaging/postinstall.sh
+  preremove: ./packaging/preremove.sh
+  postremove: ./packaging/postremove.sh
