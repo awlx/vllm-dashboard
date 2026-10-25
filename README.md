@@ -112,7 +112,7 @@ Build the same binary for either deployment mode:
 git clone https://github.com/awlx/vllm-dashboard.git
 cd vllm-dashboard
 go test ./...
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard .
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-dashboard
 ```
 
 ### Single-Node Quick Start
