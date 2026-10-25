@@ -1,0 +1,21 @@
+# Example fleet collector deployment.
+#
+#   cp config.example.json dashboard.json
+#   # Set "listen" to "0.0.0.0:9090" and point "peers" at your node agents.
+#   docker compose -f docker-compose.example.yml up -d
+#
+# The dashboard has no built-in authentication. Keep the published port on a
+# trusted network or put an authenticating reverse proxy in front of it.
+services:
+  vllm-dashboard:
+    image: ghcr.io/awlx/vllm-dashboard:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./dashboard.json:/etc/vllm-dashboard/dashboard.json:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
