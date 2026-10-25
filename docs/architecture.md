@@ -23,18 +23,60 @@ collector an empty `node.models` list.
 
 ## Components
 
-| Component | Source | Purpose |
-| --- | --- | --- |
-| Configuration | `main.go` (`loadConfig`, `parsePollInterval`) | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. Unknown fields are rejected. Without the variable, built-in defaults are used. `VLLM_DASHBOARD_POLL_INTERVAL` overrides `poll_interval`. |
-| Poll loop | `main.go` (`runPollLoop`, `poll`, `pollModel`) | Runs `poll()` on a ticker at the poll interval (default 1 s). Polls never overlap. Collects host telemetry once and then scrapes all local models in parallel. |
-| vLLM scraper | `main.go` (`scrapeVLLM`) | Reads the Prometheus text from each model's `metrics_url`. Keeps only `vllm:` series and sums label variants per name. |
-| GPU sampler | `perf.go` (`runGPUSampler`, `latestGPU`), `main.go`, `amdgpu.go` | Runs in its own goroutine. Runs `nvidia-smi`. If it reports no values, runs `amd-smi`. The poll loop uses the last reading. |
-| Host scraper | `main.go` | Reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and CPU frequency files in sysfs. |
-| Process and service metadata | `main.go` (`buildServerInfo`), `perf.go` (`cachedServerInfo`) | Finds the vLLM process with `pgrep`, reads `/proc/<pid>/cmdline`, and reads `systemctl show` properties. Caches the result. |
-| In-memory store | `main.go` (`ModelState`, `appendLongSample`) | Per-model live ring buffer and 24-hour one-minute history. |
-| Fleet aggregation | `main.go` (`peerAPI`, `combined*`), `perf.go` (`fanOutPeers`) | Fetches peer JSON APIs in parallel on request and merges them with local data. |
-| HTTP API and UI | `main.go` (`newServeMux`), `perf.go` (`gzipJSON`), `static/index.html` | JSON API with optional gzip, and the embedded single-page UI. |
-| Prometheus exporter | `metrics.go` | `GET /metrics` for Prometheus and `GET /api/telemetry` for collectors. |
+All Go code is in package `main` in the repository root. Each file has one
+area of responsibility.
+
+| Component | File | Main functions | Purpose |
+| --- | --- | --- | --- |
+| Entry point | `main.go` | `main` | Loads the configuration, applies `VLLM_DASHBOARD_POLL_INTERVAL`, reads the vLLM and kernel versions, starts the GPU sampler and the poll loop, and serves HTTP. Embeds `static/index.html`. |
+| Configuration | `config.go` | `loadConfig`, `defaultConfig`, `parsePollInterval`, `displayName` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. Unknown fields are rejected. Without the variable, built-in defaults are used. |
+| Shared types | `types.go` | `Sample`, `TokenUsage`, `ModelOverview`, `ServerInfo` | JSON types of the HTTP API. |
+| Runtime state | `state.go` | `ModelState`, `configureRuntime`, `historySize`, `onlineWindow`, `modelConfig` | Constants, the poll interval, package-level state, and the mutex `mu`. |
+| Poll loop | `poll.go` | `runPollLoop`, `poll`, `pollModel` | Runs `poll()` on a ticker at the poll interval (default 1 s). Polls never overlap. Collects host telemetry once and then scrapes all local models in parallel. Calculates rates and averages and appends samples. |
+| vLLM scraper | `vllm.go` | `scrapeVLLM`, `normalizeTensorFoldMetrics`, `discoverServedModelName` | Reads the Prometheus text from each model's `metrics_url`. Keeps `vllm:` series (and `tensorfold:` series) and sums label variants per name. |
+| GPU sampler | `perf.go`, `gpu.go`, `amdgpu.go` | `runGPUSampler`, `latestGPU`, `scrapeGPU`, `parseNvidiaSMI`, `scrapeAMDGPU` | Runs in its own goroutine. Runs `nvidia-smi`. If it reports no values, runs `amd-smi`. The poll loop uses the last reading. |
+| Host scraper | `host.go` | `scrapeCPUTimes`, `scrapeCPUClockMHz`, `scrapeMem`, `scrapeNet`, `readKernelVersion` | Reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/sys/kernel/osrelease`, and CPU frequency files in sysfs. |
+| Process and service metadata | `process.go`, `perf.go` | `buildModelIdentity`, `buildServerInfo`, `findVLLMPid`, `cachedServerInfo` | Finds the vLLM process with `pgrep`, reads `/proc/<pid>/cmdline`, and reads `systemctl show` properties. Caches the result. |
+| History and token usage | `history.go` | `appendLongSample`, `aggregateSampleSets`, `samplesFor`, `tokensInWindow`, `usageForKey` | Builds the minute rollup, merges sample series, and calculates token usage windows. |
+| Fleet aggregation | `fleet.go`, `perf.go` | `peerAPI`, `combinedSamples`, `combinedOverview`, `metricsForRequest`, `fanOutPeers` | Resolves model keys, fetches peer JSON APIs in parallel on request, and merges them with local data. |
+| HTTP API | `api.go`, `perf.go` | `newServeMux`, `currentSettings`, `writeJSON`, `gzipJSON` | Handlers for `/api/metrics`, `/api/metrics/long`, `/api/info`, `/api/tokens`, `/api/settings`, and `/api/overview`. Optional gzip. |
+| Prometheus exporter | `metrics.go` | `registerMetricsHandlers`, `collectTelemetry` | `GET /metrics` for Prometheus and `GET /api/telemetry` for collectors. |
+| UI | `static/index.html` | — | Embedded single-page UI. Polls the JSON API. |
+
+The graph shows which file calls functions or reads state in which other file.
+All files read the shared state in `state.go`; those edges are left out.
+`perf.go` holds the GPU sampler, the caches, the peer fan-out, and gzip.
+
+```mermaid
+flowchart TB
+  main["main.go"] --> config["config.go"]
+  main --> host["host.go"]
+  main --> process["process.go"]
+  main --> poll["poll.go"]
+  main --> api["api.go"]
+  main --> perf["perf.go"]
+  api --> metrics["metrics.go"]
+  poll --> perf
+  perf --> gpu["gpu.go + amdgpu.go"]
+  poll --> host
+  poll --> vllm["vllm.go"]
+  poll --> process
+  poll --> history["history.go"]
+  process --> vllm
+  api --> fleet["fleet.go"]
+  api --> history
+  api --> perf
+  fleet --> perf
+  fleet --> history
+  fleet --> process
+  fleet --> config
+  history --> fleet
+  metrics --> config
+  metrics --> host
+  state[("state.go<br/>mu, config, models, modelStates")]
+```
+
+Issue #9 describes the planned move to `internal/` packages.
 
 ## Single-node deployment
 

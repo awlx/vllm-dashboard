@@ -439,7 +439,7 @@ configuration files can reveal network topology and are ignored by the supplied
 ```sh
 go test ./...
 go vet ./...
-gofmt -w main.go main_test.go
+gofmt -w .
 ```
 
 The project deliberately uses only the Go standard library, the Prometheus Go
