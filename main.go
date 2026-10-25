@@ -147,7 +147,7 @@ type ServerInfo struct {
 }
 
 const (
-	defaultPollInterval = 2 * time.Second
+	defaultPollInterval = time.Second
 	minPollInterval     = 500 * time.Millisecond
 	// The 30s telemetry freshness window must cover several polls.
 	maxPollInterval = 10 * time.Second

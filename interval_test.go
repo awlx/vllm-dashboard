@@ -33,8 +33,8 @@ func TestParsePollInterval(t *testing.T) {
 
 func TestLoadConfigPollInterval(t *testing.T) {
 	base := `"listen": ":9090", "node": {"key":"node-a","name":"A","models":[]}`
-	cfg, err := loadConfig(writeTestConfig(t, `{`+base+`, "poll_interval": "1s"}`))
-	if err != nil || cfg.PollInterval != "1s" {
+	cfg, err := loadConfig(writeTestConfig(t, `{`+base+`, "poll_interval": "2s"}`))
+	if err != nil || cfg.PollInterval != "2s" {
 		t.Fatalf("cfg=%+v err=%v", cfg, err)
 	}
 	if _, err := loadConfig(writeTestConfig(t, `{`+base+`, "poll_interval": "100ms"}`)); err == nil {
@@ -42,7 +42,7 @@ func TestLoadConfigPollInterval(t *testing.T) {
 	}
 	configureRuntime(cfg)
 	defer configureRuntime(defaultConfig())
-	if pollInterval != time.Second || historySize() != 300 || onlineWindow() != 6*time.Second {
+	if pollInterval != 2*time.Second || historySize() != 150 || onlineWindow() != 6*time.Second {
 		t.Fatalf("interval=%v history=%d online=%v", pollInterval, historySize(), onlineWindow())
 	}
 }
@@ -142,5 +142,12 @@ func TestSettingsRoute(t *testing.T) {
 	}
 	if !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
 		t.Fatalf("content type %q", recorder.Header().Get("Content-Type"))
+	}
+}
+
+func TestDefaultPollInterval(t *testing.T) {
+	configureRuntime(defaultConfig())
+	if pollInterval != time.Second || historySize() != 300 || onlineWindow() != 6*time.Second {
+		t.Fatalf("interval=%v history=%d online=%v", pollInterval, historySize(), onlineWindow())
 	}
 }

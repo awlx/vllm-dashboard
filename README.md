@@ -13,7 +13,7 @@ collector. A container image is also available; see [Docker](#docker).
 
 - Multiple compute nodes and models in one fleet overview
 - Globally scoped `node/model` identifiers
-- Live charts with a configurable poll interval (default two seconds) and one-minute 24-hour in-memory history
+- Live charts with a configurable poll interval (default one second) and one-minute 24-hour in-memory history
 - Throughput, latency, request, KV-cache, prefix-cache, and speculative-decoding metrics
 - GPU utilization, temperature, power, and core clock from `nvidia-smi` or `amd-smi`
 - Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
@@ -153,7 +153,7 @@ Run an instance beside each vLLM server. Start with
 ```json
 {
   "listen": "0.0.0.0:9090",
-  "poll_interval": "2s",
+  "poll_interval": "1s",
   "node": {
     "key": "node-a",
     "hostname": "node-a.example.net",
@@ -177,19 +177,19 @@ optional; when present, its first DNS label is used as the display name.
 
 `poll_interval` sets how often the dashboard scrapes vLLM, the GPU tool, and
 host counters. Use a Go duration string from `500ms` to `10s`. The default is
-`2s`. The `VLLM_DASHBOARD_POLL_INTERVAL` environment variable overrides the
+`1s`. The `VLLM_DASHBOARD_POLL_INTERVAL` environment variable overrides the
 file value.
 
 ```json
 {
   "listen": "0.0.0.0:9090",
-  "poll_interval": "1s",
+  "poll_interval": "2s",
   "node": { "key": "node-a", "hostname": "node-a.example.net", "models": [] }
 }
 ```
 
 - The live charts always show five minutes. The number of samples follows
-  the interval: 150 at `2s`, 300 at `1s`, 600 at `500ms`.
+  the interval: 300 at `1s`, 150 at `2s`, 600 at `500ms`.
 - The 24-hour charts keep one point per minute. Each point is the average of
   all polls in that minute. Latency and speculative-decoding points use only
   polls that had activity. Counters use the last poll of the minute.
