@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -284,6 +285,8 @@ func configureRuntime(cfg DashboardConfig) {
 	for _, model := range models {
 		modelStates[model.Key] = &ModelState{}
 	}
+	identityCache.reset()
+	serverInfoCache.reset()
 }
 
 func scopedModelKey(nodeKey, modelKey string) string {
@@ -329,7 +332,7 @@ func peerForModel(key string) (PeerConfig, string, bool) {
 	return PeerConfig{}, "", false
 }
 
-func peerAPI(peer PeerConfig, path, model string, target any) error {
+func peerAPI(ctx context.Context, peer PeerConfig, path, model string, target any) error {
 	endpoint, err := url.Parse(strings.TrimRight(peer.URL, "/") + path)
 	if err != nil {
 		return err
@@ -339,7 +342,11 @@ func peerAPI(peer PeerConfig, path, model string, target any) error {
 		query.Set("model", model)
 		endpoint.RawQuery = query.Encode()
 	}
-	response, err := peerClient.Get(endpoint.String())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	response, err := peerClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -368,7 +375,14 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
+		// Only vllm: series are used, and never histogram buckets. Most
+		// lines of a real /metrics body are buckets, so skip them before
+		// the regular expression.
+		isTensorfold := strings.HasPrefix(line, "tensorfold:")
+		if !isTensorfold && !strings.HasPrefix(line, "vllm:") {
+			continue
+		}
+		if end := strings.IndexAny(line, "{ "); end > 0 && strings.HasSuffix(line[:end], "_bucket") {
 			continue
 		}
 		m := metricLineRe.FindStringSubmatch(line)
@@ -515,14 +529,7 @@ func scrapeNvidiaGPU() (util, temp, power, clock float64) {
 	if err != nil {
 		return 0, 0, 0, 0
 	}
-	parts := strings.Split(strings.TrimSpace(string(out)), ",")
-	if len(parts) >= 4 {
-		util, _ = strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-		temp, _ = strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-		power, _ = strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-		clock, _ = strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
-	}
-	return
+	return parseNvidiaSMI(out)
 }
 
 func parseKernelVersion(release string) string {
@@ -674,12 +681,12 @@ func scrapeNet() (rxBytes, txBytes float64) {
 }
 
 func poll() {
-	gpuUtil, gpuTemp, gpuPower, gpuClock := scrapeGPU()
 	cpuTotal, cpuIdle := scrapeCPUTimes()
 	cpuClock := scrapeCPUClockMHz()
 	memUsedGB, memTotalGB, memUsedPct := scrapeMem()
 	netRx, netTx := scrapeNet()
 	now := time.Now()
+	gpuUtil, gpuTemp, gpuPower, gpuClock := latestGPU(now)
 
 	shared := Sample{
 		Time:       now.UnixMilli(),
@@ -708,14 +715,26 @@ func poll() {
 	latestHostSample = shared
 	mu.Unlock()
 
+	// Scrape models in parallel, so that one slow or offline model does not
+	// delay the samples of the other models.
+	var wg sync.WaitGroup
 	for _, model := range models {
-		pollModel(model, shared, now)
+		wg.Go(func() { pollModel(model, shared, now) })
 	}
+	wg.Wait()
 }
 
 func pollModel(model ModelConfig, shared Sample, now time.Time) {
-	identity, _ := buildModelIdentity(model)
 	metrics, err := scrapeVLLM(model.MetricsURL)
+	mu.RLock()
+	recovered := err == nil && !modelStates[model.Key].LastPollSuccess
+	mu.RUnlock()
+	if recovered {
+		// The engine came back, maybe with a new process or model.
+		identityCache.invalidate(model.Key)
+		serverInfoCache.invalidate(model.Key)
+	}
+	identity, _ := cachedModelIdentity(model)
 	mu.Lock()
 	defer mu.Unlock()
 	state := modelStates[model.Key]
@@ -1101,7 +1120,7 @@ func discoverServedModelName(metricsURL string) string {
 }
 
 func buildServerInfo(model ModelConfig) ServerInfo {
-	info, processPID := buildModelIdentity(model)
+	info, processPID := cachedModelIdentity(model)
 	activeSince := systemdProperty(model, "ActiveEnterTimestamp")
 	info.ServiceActiveSince = activeSince
 	// Process age is authoritative; oneshot compose units stay active across container restarts.
@@ -1274,29 +1293,27 @@ func requestedModel(r *http.Request) string {
 	return key
 }
 
-func combinedSamples(long bool) []Sample {
+func combinedSamples(ctx context.Context, long bool) []Sample {
 	mu.RLock()
 	local := append([]Sample(nil), aggregateLocalSamples(long)...)
 	mu.RUnlock()
-	sources := [][]Sample{local}
 	path := "/api/metrics"
 	if long {
 		path += "/long"
 	}
-	for _, peer := range config.Peers {
-		var samples []Sample
-		if err := peerAPI(peer, path, "all", &samples); err != nil {
+	peerSamples := make([][]Sample, len(config.Peers))
+	fanOutPeers(ctx, config.Peers, func(ctx context.Context, index int, peer PeerConfig) {
+		if err := peerAPI(ctx, peer, path, "all", &peerSamples[index]); err != nil {
 			log.Printf("peer %s metrics: %v", peer.Key, err)
-			continue
+			peerSamples[index] = nil
 		}
-		sources = append(sources, samples)
-	}
-	return aggregateSampleSets(sources)
+	})
+	return aggregateSampleSets(append([][]Sample{local}, peerSamples...))
 }
 
-func metricsForRequest(key string, long bool) ([]Sample, error) {
+func metricsForRequest(ctx context.Context, key string, long bool) ([]Sample, error) {
 	if key == "" || key == "all" {
-		return combinedSamples(long), nil
+		return combinedSamples(ctx, long), nil
 	}
 	if localKey, ok := localModelKey(key); ok {
 		mu.RLock()
@@ -1312,13 +1329,13 @@ func metricsForRequest(key string, long bool) ([]Sample, error) {
 		path += "/long"
 	}
 	var samples []Sample
-	return samples, peerAPI(peer, path, peerModel, &samples)
+	return samples, peerAPI(ctx, peer, path, peerModel, &samples)
 }
 
 func localOverview() []ModelOverview {
 	overview := make([]ModelOverview, 0, len(models))
 	for _, model := range models {
-		info := buildServerInfo(model)
+		info := cachedServerInfo(model)
 		mu.RLock()
 		state := modelStates[model.Key]
 		item := ModelOverview{
@@ -1336,14 +1353,17 @@ func localOverview() []ModelOverview {
 	return overview
 }
 
-func combinedOverview() []ModelOverview {
+func combinedOverview(ctx context.Context) []ModelOverview {
 	overview := localOverview()
-	for _, peer := range config.Peers {
-		var peerModels []ModelOverview
-		if err := peerAPI(peer, "/api/overview", "", &peerModels); err != nil {
+	results := make([][]ModelOverview, len(config.Peers))
+	fanOutPeers(ctx, config.Peers, func(ctx context.Context, index int, peer PeerConfig) {
+		if err := peerAPI(ctx, peer, "/api/overview", "", &results[index]); err != nil {
 			log.Printf("peer %s overview: %v", peer.Key, err)
-			continue
+			results[index] = nil
 		}
+	})
+	for peerIndex, peer := range config.Peers {
+		peerModels := results[peerIndex]
 		for index := range peerModels {
 			modelKey := peerModels[index].Key
 			if strings.Contains(modelKey, "/") {
@@ -1377,6 +1397,7 @@ func main() {
 		cfg.PollInterval = value
 	}
 	configureRuntime(cfg)
+	sampleGPU()
 	if out, err := exec.Command("vllm", "--version").Output(); err == nil {
 		vllmVersion = strings.TrimSpace(string(out))
 	}
@@ -1385,6 +1406,7 @@ func main() {
 		modelStates[model.Key].CounterStartedAt = modelProcessStartedAt(model)
 	}
 
+	go runGPUSampler(context.Background())
 	go runPollLoop()
 
 	mux := newServeMux()
@@ -1423,28 +1445,28 @@ func newServeMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	registerMetricsHandlers(mux)
 
-	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
-		samples, err := metricsForRequest(requestedModel(r), false)
+	mux.HandleFunc("/api/metrics", gzipJSON(func(w http.ResponseWriter, r *http.Request) {
+		samples, err := metricsForRequest(r.Context(), requestedModel(r), false)
 		if err != nil {
 			http.Error(w, "model unavailable", http.StatusBadGateway)
 			return
 		}
 		writeJSON(w, samples)
-	})
+	}))
 
-	mux.HandleFunc("/api/metrics/long", func(w http.ResponseWriter, r *http.Request) {
-		samples, err := metricsForRequest(requestedModel(r), true)
+	mux.HandleFunc("/api/metrics/long", gzipJSON(func(w http.ResponseWriter, r *http.Request) {
+		samples, err := metricsForRequest(r.Context(), requestedModel(r), true)
 		if err != nil {
 			http.Error(w, "model unavailable", http.StatusBadGateway)
 			return
 		}
 		writeJSON(w, samples)
-	})
+	}))
 
-	mux.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/info", gzipJSON(func(w http.ResponseWriter, r *http.Request) {
 		key := requestedModel(r)
 		if localKey, ok := localModelKey(key); ok {
-			writeJSON(w, buildServerInfo(modelConfig(localKey)))
+			writeJSON(w, cachedServerInfo(modelConfig(localKey)))
 			return
 		}
 		peer, peerModel, ok := peerForModel(key)
@@ -1453,32 +1475,35 @@ func newServeMux() *http.ServeMux {
 			return
 		}
 		var info ServerInfo
-		if err := peerAPI(peer, "/api/info", peerModel, &info); err != nil {
+		if err := peerAPI(r.Context(), peer, "/api/info", peerModel, &info); err != nil {
 			http.Error(w, "peer unavailable", http.StatusBadGateway)
 			return
 		}
 		writeJSON(w, info)
-	})
+	}))
 
-	mux.HandleFunc("/api/tokens", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/tokens", gzipJSON(func(w http.ResponseWriter, r *http.Request) {
 		key := requestedModel(r)
 		var usage TokenUsage
 		if key == "" || key == "all" {
 			mu.RLock()
 			usage = usageForKey("all")
 			mu.RUnlock()
-			for _, peer := range config.Peers {
-				var peerUsage TokenUsage
-				if err := peerAPI(peer, "/api/tokens", "all", &peerUsage); err == nil {
-					usage = addUsage(usage, peerUsage)
+			peerUsage := make([]TokenUsage, len(config.Peers))
+			fanOutPeers(r.Context(), config.Peers, func(ctx context.Context, index int, peer PeerConfig) {
+				if err := peerAPI(ctx, peer, "/api/tokens", "all", &peerUsage[index]); err != nil {
+					peerUsage[index] = TokenUsage{}
 				}
+			})
+			for _, item := range peerUsage {
+				usage = addUsage(usage, item)
 			}
 		} else if localKey, ok := localModelKey(key); ok {
 			mu.RLock()
 			usage = usageForKey(localKey)
 			mu.RUnlock()
 		} else if peer, peerModel, ok := peerForModel(key); ok {
-			if err := peerAPI(peer, "/api/tokens", peerModel, &usage); err != nil {
+			if err := peerAPI(r.Context(), peer, "/api/tokens", peerModel, &usage); err != nil {
 				http.Error(w, "peer unavailable", http.StatusBadGateway)
 				return
 			}
@@ -1487,15 +1512,15 @@ func newServeMux() *http.ServeMux {
 			return
 		}
 		writeJSON(w, usage)
-	})
+	}))
 
-	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/settings", gzipJSON(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, currentSettings())
-	})
+	}))
 
-	mux.HandleFunc("/api/overview", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, combinedOverview())
-	})
+	mux.HandleFunc("/api/overview", gzipJSON(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, combinedOverview(r.Context()))
+	}))
 
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {

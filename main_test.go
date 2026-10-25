@@ -71,7 +71,7 @@ func TestPeerAPIForwardsModelAndDecodesResponse(t *testing.T) {
 	defer server.Close()
 
 	var samples []Sample
-	if err := peerAPI(PeerConfig{Key: "node-b", URL: server.URL}, "/api/metrics", "model-a", &samples); err != nil {
+	if err := peerAPI(t.Context(), PeerConfig{Key: "node-b", URL: server.URL}, "/api/metrics", "model-a", &samples); err != nil {
 		t.Fatal(err)
 	}
 	if len(samples) != 1 || samples[0].Running != 2 {
@@ -89,7 +89,7 @@ func TestCombinedOverviewScopesPeerModels(t *testing.T) {
 		Node:  NodeConfig{Key: "node-a", Name: "Node A"},
 		Peers: []PeerConfig{{Key: "node-b", Name: "Node B", Hostname: "node-b.example.net", URL: server.URL}},
 	})
-	overview := combinedOverview()
+	overview := combinedOverview(t.Context())
 	if len(overview) != 1 || overview[0].Key != "node-b/model-a" || overview[0].NodeName != "node-b" {
 		t.Fatalf("unexpected overview: %+v", overview)
 	}
