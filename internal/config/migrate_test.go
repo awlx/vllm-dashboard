@@ -204,3 +204,20 @@ func TestLoadDuplicatePeerHostsGetUniqueKeys(t *testing.T) {
 		t.Errorf("peer keys = %v", got)
 	}
 }
+
+func TestExampleFilesLoadWithoutWarnings(t *testing.T) {
+	fakeHostname(t, "gpu-a.example.net")
+	for _, name := range []string{"config.example.json", "config.node.example.json"} {
+		buffer := captureLog(t)
+		cfg, err := Load("../../" + name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(buffer.String(), "obsolete") {
+			t.Errorf("%s logs obsolete fields: %s", name, buffer.String())
+		}
+		if cfg.Node.Key != "gpu-a" {
+			t.Errorf("%s node key = %q", name, cfg.Node.Key)
+		}
+	}
+}

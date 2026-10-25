@@ -2,16 +2,17 @@
 
 This document describes how the vLLM dashboard collects, stores, and serves
 data. It covers the single-node and the multi-node (fleet) deployment, the
-HTTP API, the Prometheus `/metrics` endpoint, and data retention.
+HTTP API, the Prometheus `/metrics` endpoint, data retention, the
+configuration, and model discovery.
 
 The dashboard is one Go binary. The same binary runs as a **node agent** (it
-has local models in `node.models`) or as a **fleet collector** (it has
-`peers`). A process can have both, but the usual fleet layout gives the
-collector an empty `node.models` list.
+has local models) or as a **fleet collector** (it has `peers`). A process can
+have both, but the usual fleet layout gives the collector no local models.
 
 ## Contents
 
 - [Components](#components)
+- [Configuration and discovery](#configuration-and-discovery)
 - [Single-node deployment](#single-node-deployment)
 - [Multi-node (fleet) deployment](#multi-node-fleet-deployment)
 - [Poll cycle and browser refresh](#poll-cycle-and-browser-refresh)
@@ -35,18 +36,19 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-d
 
 | Component | Package | Main identifiers | Purpose |
 | --- | --- | --- | --- |
-| Entry point | `cmd/vllm-dashboard` | `main` | Loads the configuration, applies `VLLM_DASHBOARD_POLL_INTERVAL`, reads the vLLM and kernel versions, starts the GPU sampler and the poller, registers the handlers on one `http.ServeMux`, and serves HTTP. |
-| Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. Unknown fields are rejected. Without the variable, built-in defaults are used. |
+| Entry point | `cmd/vllm-dashboard` | `main` | Loads the configuration, runs the first model discovery, reads the vLLM and kernel versions, starts the GPU sampler, the poller, and the peer resolver, registers the handlers on one `http.ServeMux`, and serves HTTP. |
+| Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `CompleteModel`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. The file is optional. Unknown fields are rejected. Obsolete fields are ignored and logged. Applies the `VLLM_DASHBOARD_*` environment variables. Fills empty fields from the host name, the URLs, and the ports. |
+| Model discovery | `internal/discovery` | `Scan`, `Probe`, `Discover`, `Merge`, `NameModels`, `Tracker` | Finds vLLM and TensorFold server processes in `/proc`, reads their flags and systemd unit, and checks their `/metrics` endpoint. `Tracker` keeps a stopped model for a grace time and then removes it. |
 | Data types | `internal/sample` | `Sample`, `TokenUsage`, `ModelOverview`, `ServerInfo` | JSON types of the HTTP API. |
 | Local state | `internal/store` | `Store`, `ModelState`, `New`, `Update`, `Append`, `Samples`, `Snapshot`, `HistorySize`, `OnlineWindow`, `AppendLongSample`, `AggregateSampleSets`, `HistoryWindow`, `LongInterval`, `LongSize` | Holds the state and history of each local model and the latest host sample. One `sync.RWMutex` in `Store` protects them. Builds the minute rollup and calculates token usage windows. |
-| Poll loop | `internal/poller` | `Poller`, `New`, `Run`, `Poll`, `recordScrape` | Runs `Poll` on a ticker at the poll interval (default 1 s). Polls never overlap. Collects host telemetry once and then scrapes all local models in parallel. Calculates rates and averages and writes samples to the store. |
+| Poll loop | `internal/poller` | `Poller`, `New`, `Run`, `Poll`, `Discover`, `recordScrape` | Runs `Poll` on a ticker at the poll interval (default 1 s). Runs `Discover` every 30 s. Polls never overlap. Collects host telemetry once and then scrapes all local models in parallel. Calculates rates and averages and writes samples to the store. |
 | vLLM scraper | `internal/collect/vllm` | `Scrape`, `ServedModelName`, `normalizeTensorFoldMetrics` | Reads the Prometheus text from each model's `metrics_url`. Keeps `vllm:` series (and `tensorfold:` series), skips histogram buckets, and sums label variants per name. |
 | GPU sampler | `internal/collect/gpu` | `Sampler`, `NewSampler`, `Run`, `Latest`, `Scrape`, `parseNvidiaSMI`, `scrapeAMD` | Runs in its own goroutine. Runs `nvidia-smi`. If it reports no values, runs `amd-smi`. The poller uses the last reading. |
 | Host scraper | `internal/collect/host` | `CPUTimes`, `CPUClockMHz`, `Memory`, `Network`, `KernelVersion` | Reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/sys/kernel/osrelease`, and CPU frequency files in sysfs. |
-| Process and service metadata | `internal/collect/process` | `Identity`, `ServerInfo`, `StartedAt`, `DisplayName`, `Cache`, `NewCache`, `Invalidate` | Finds the vLLM process with `pgrep`, reads `/proc/<pid>/cmdline`, and reads `systemctl show` properties. `Cache` keeps the results. |
+| Process and service metadata | `internal/collect/process` | `Identity`, `ServerInfo`, `StartedAt`, `DisplayName`, `Cache`, `NewCache`, `Invalidate` | Finds the vLLM process in `/proc`, reads `/proc/<pid>/cmdline`, and reads `systemctl show` properties from the system manager or the user manager. `Cache` keeps the results. |
 | Cache | `internal/cache` | `TTL`, `NewTTL`, `Get`, `Invalidate`, `Reset` | Generic cache that keeps one value per key for a fixed time. |
-| Fleet aggregation | `internal/fleet` | `Fleet`, `FanOut`, `MetricsForRequest`, `CombinedOverview`, `PeerAPI`, `PeerForModel`, `PeerTimeout`, `PeerConcurrency` | Resolves model keys, fetches peer JSON APIs in parallel on request, and merges them with local data. |
-| HTTP API | `internal/api` | `Register`, `Settings`, `CurrentSettings`, `WriteJSON`, `GzipJSON` | Handlers for `/api/metrics`, `/api/metrics/long`, `/api/info`, `/api/tokens`, `/api/settings`, and `/api/overview`. Optional gzip. |
+| Fleet aggregation | `internal/fleet` | `Fleet`, `FanOut`, `ResolvePeers`, `RunResolver`, `NodeInfo`, `MetricsForRequest`, `CombinedOverview`, `PeerAPI`, `PeerForModel`, `PeerTimeout`, `PeerConcurrency` | Reads the identity of each peer from `/api/node` every 30 s. Resolves model keys, fetches peer JSON APIs in parallel on request, and merges them with local data. |
+| HTTP API | `internal/api` | `Register`, `Settings`, `CurrentSettings`, `WriteJSON`, `GzipJSON` | Handlers for `/api/metrics`, `/api/metrics/long`, `/api/info`, `/api/tokens`, `/api/settings`, `/api/overview`, and `/api/node`. Optional gzip. |
 | Prometheus exporter | `internal/metrics` | `Register`, `collectTelemetry`, `telemetryCollector` | `GET /metrics` for Prometheus and `GET /api/telemetry` for collectors. |
 | UI | `internal/web` | `Handler` | Embeds `internal/web/static/index.html` with `go:embed` and serves it at `/`. The page polls the JSON API. |
 
@@ -65,6 +67,8 @@ flowchart TB
   main --> gpu["internal/collect/gpu"]
   main --> host["internal/collect/host"]
   main --> process["internal/collect/process"]
+  main --> discovery["internal/discovery"]
+  main --> vllm
   api --> fleet
   api --> store
   fleet --> store
@@ -76,15 +80,112 @@ flowchart TB
   poller --> host
   poller --> vllm["internal/collect/vllm"]
   poller --> process
+  poller --> discovery
+  process --> discovery
   process --> vllm
   process --> cache["internal/cache"]
   leaf["internal/config<br/>internal/sample"]
 ```
 
+## Configuration and discovery
+
+The configuration file is optional. A node agent starts with no file and no
+environment variables. `config.Load` makes the configuration in this sequence:
+
+1. Start with the defaults: `listen` is `:9090`, `poll_interval` is `1s`, and
+   discovery is on.
+2. Read the file at `VLLM_DASHBOARD_CONFIG`, if it exists. Unknown fields are
+   an error.
+3. Apply the environment variables.
+4. Log and ignore the obsolete fields.
+5. Fill the empty fields.
+
+| Setting | Default | Environment variable |
+| --- | --- | --- |
+| `listen` | `:9090` | `VLLM_DASHBOARD_LISTEN` |
+| `poll_interval` | `1s` (from `500ms` to `10s`) | `VLLM_DASHBOARD_POLL_INTERVAL` |
+| `node.key`, `node.name` | Short host name from `os.Hostname()` | `VLLM_DASHBOARD_HOSTNAME` |
+| `node.hostname` | Full host name, if it is a valid DNS name | `VLLM_DASHBOARD_HOSTNAME` |
+| `node.discover` | `true` | `VLLM_DASHBOARD_DISCOVER` |
+| `node.models` | Found by discovery | None |
+| `peers` | None | `VLLM_DASHBOARD_PEERS` (comma-separated URLs, added to the file peers) |
+
+A model in `node.models` needs `port` or `metrics_url`. The dashboard makes
+each value from the other: port `8000` gives
+`http://127.0.0.1:8000/metrics`. The model `key` comes from `name` or from the
+port (`port-8000`). The model name comes from `--served-model-name` or
+`/v1/models`.
+
+A peer is a URL string. The collector reads `key`, `name`, and `hostname`
+from `GET /api/node` of the peer every 30 seconds. Until the peer answers, the
+key and the name come from the URL host. If two peers report the same key,
+the second peer keeps its URL-based key.
+
+The old file format still loads:
+
+| Old field | Now |
+| --- | --- |
+| `node.models[].user_unit` | Ignored and logged. The unit scope comes from the cgroup or from `systemctl`. |
+| `peers[].key`, `peers[].name`, `peers[].hostname` | Ignored and logged. The peer reports them. |
+| `node.key`, `node.name`, `node.hostname` | Optional. |
+| `node.models[].key`, `name`, `metrics_url`, `port`, `unit` | Optional. Set `port` or `metrics_url`. |
+| `listen`, `node.models` | Optional. |
+
+### Model discovery
+
+Discovery reads `/proc/<pid>/cmdline` of each process. It accepts these
+commands:
+
+- `vllm serve <model>`
+- `python -m vllm.entrypoints.openai.api_server --model <model>`
+- A TensorFold server command (`tensorfold serve`, or a `tensorfold*` program or module with `server` in its name)
+
+Discovery reads `--port` (default `8000`), `--host`, `--served-model-name`, and
+the model argument. Flags with `_` and `-` are the same. If a server has child
+processes with the same command, discovery uses the parent process. The
+systemd unit comes from the `0::` line (cgroup v2) or the `name=systemd` line
+(cgroup v1) of `/proc/<pid>/cgroup`. A unit below `user@<uid>.service` is a
+user unit.
+
+Discovery then sends `GET /metrics` to the server. It keeps the server only if
+the response is HTTP 200 and contains `vllm:` or `tensorfold:` series. A
+wildcard host such as `0.0.0.0` becomes `127.0.0.1`.
+
+```mermaid
+flowchart TB
+  proc["/proc/&lt;pid&gt;/cmdline<br/>/proc/&lt;pid&gt;/status<br/>/proc/&lt;pid&gt;/cgroup"] --> scan["discovery.Scan<br/>match command, read flags,<br/>keep parent process, read unit"]
+  scan --> probe["discovery.Probe<br/>GET http://127.0.0.1:&lt;port&gt;/metrics"]
+  probe --> merge["discovery.Merge<br/>configured models win"]
+  file["node.models from the file"] --> merge
+  merge --> track["discovery.Tracker<br/>grace time 5 min"]
+  track --> name["discovery.NameModels<br/>/v1/models"]
+  name --> store[("store.SetModels")]
+  timer["Poller every 30 s"] --> scan
+```
+
+The poller runs discovery every 30 seconds:
+
+- A new server is added to the store.
+- A configured model keeps the values that the file sets. Discovery fills
+  only the values that the file does not set, for example the unit.
+- After the first discovery, the keys of known models do not change.
+- A discovered server that stops shows as offline. After 5 minutes, it is
+  removed.
+- A new server on the same URL with a different model replaces the old model
+  at once.
+
+Set `node.discover` to `false` or `VLLM_DASHBOARD_DISCOVER=false` to use only
+the models of the file.
+
+Discovery needs access to the processes of the host. In a container, use
+`--pid host`. The probe connects to `127.0.0.1`, so use `--network host` too.
+Discovery does not scan the network.
+
 ## Single-node deployment
 
-Use one dashboard process when all vLLM servers run on the same machine. Add
-one entry to `node.models` for each vLLM `/metrics` endpoint.
+Use one dashboard process when all vLLM servers run on the same machine. The
+process finds the servers. Add an entry to `node.models` only for a server
+that discovery cannot find.
 
 ```mermaid
 flowchart LR
@@ -94,7 +195,7 @@ flowchart LR
     v2["vLLM server :8001<br/>/metrics, /v1/models"]
     gpu["nvidia-smi or amd-smi"]
     sys["/proc, sysfs"]
-    meta["pgrep, ps, /proc/pid/cmdline,<br/>systemctl show"]
+    meta["ps, /proc/pid/cmdline,<br/>systemctl show"]
     subgraph dash["vllm-dashboard :9090"]
       gpus["GPU sampler<br/>own goroutine"]
       poll["Poll loop<br/>every poll_interval (1 s)"]
@@ -124,8 +225,8 @@ Prometheus and Grafana are optional. The UI works without them.
 ## Multi-node (fleet) deployment
 
 Run one node agent on each compute node. Run one more dashboard process as the
-fleet collector. The collector has an empty `node.models` list and one `peers`
-entry for each node agent. The collector does not store peer data. It calls the
+fleet collector. The collector has no local models and one `peers` URL for
+each node agent. The collector does not store peer data. It calls the
 peer APIs when a browser or Prometheus sends a request: `/api/overview`,
 `/api/metrics`, `/api/metrics/long`, `/api/info`, and `/api/tokens` for the
 UI, and `/api/telemetry` for `/metrics`. Agents do not push data.
@@ -139,8 +240,9 @@ flowchart LR
     vb["vLLM server(s)"] --> agentB["vllm-dashboard<br/>node agent<br/>node.key = node-b"]
   end
   subgraph col["Collector host"]
-    collector["vllm-dashboard<br/>fleet collector<br/>models: [], peers: [node-a, node-b]"]
+    collector["vllm-dashboard<br/>fleet collector<br/>peers: [URL of node-a, URL of node-b]"]
   end
+  collector -- "GET /api/node every 30 s" --> agentA
   collector -- "HTTP GET /api/*<br/>on each request" --> agentA
   collector -- "HTTP GET /api/*<br/>on each request" --> agentB
   browser["Browser"] --> proxy["Reverse proxy<br/>TLS + authentication"] --> collector
@@ -152,13 +254,12 @@ flowchart LR
 
 Each model has a globally scoped key `<node.key>/<model.key>`, for example
 `node-a/model-a`. The collector rewrites the keys from each peer to
-`<peer.key>/<model key>`, so the peer `key` in the collector configuration is
-the node identifier that the UI shows. Use the same value as the agent's
-`node.key` to avoid confusion.
+`<peer key>/<model key>`. The peer key is the `node.key` that the agent
+reports in `GET /api/node`, so the agent and the collector show the same key.
 
 The node display name is the first DNS label of `hostname` when `hostname` is
 set. Otherwise it is `name`. On the collector, the display name of a peer comes
-from the `peers` entry, not from the agent.
+from the agent. If the agent does not answer, it is the host of the peer URL.
 
 ### Request routing on the collector
 
@@ -217,7 +318,7 @@ sequenceDiagram
   autonumber
   participant G as GPU sampler
   participant L as Poll loop
-  participant H as Host tools (GPU, /proc, sysfs, pgrep)
+  participant H as Host tools (GPU, /proc, sysfs, ps)
   participant V as vLLM (per model)
   participant S as In-memory store
   participant B as Browser
@@ -236,7 +337,7 @@ sequenceDiagram
     par Each configured model, in parallel
       L->>V: GET metrics_url (timeout 1.5 s)
       V-->>L: Prometheus text (vllm:* series)
-      L->>H: pgrep, /proc/pid/cmdline (cached 30 s)
+      L->>H: /proc/pid/cmdline, ps (cached 30 s)
       L->>L: Rates and averages from counter deltas
       L->>S: Append to live buffer and to the minute rollup
     end
@@ -361,6 +462,7 @@ All endpoints are on the `listen` address. There is no authentication.
 | Endpoint | Response | `model` parameter |
 | --- | --- | --- |
 | `GET /` | Embedded UI | — |
+| `GET /api/node` | `key`, `name`, and `hostname` of this node. The collector uses it to name the peer. | Not used |
 | `GET /api/overview` | List of models: key, name, node, `online`, latest sample, server info, token usage. Includes peers. | Not used |
 | `GET /api/metrics` | Live samples (about 5 minutes) | `all` (default), local key, or `node/model` |
 | `GET /api/metrics/long` | 24-hour samples at one-minute resolution | Same as `/api/metrics` |
@@ -411,7 +513,7 @@ ask peers for their peers.
 | Label | Value |
 | --- | --- |
 | `node` | Node display name (short hostname or `name`; falls back to the key) |
-| `node_key` | `node.key` for the local node, `peers[].key` for a peer |
+| `node_key` | `node.key` for the local node, the key that the peer reports for a peer |
 | `model` | Served model name found at runtime (falls back to the configured name) |
 | `model_key` | Model `key` from the node configuration (without the node prefix) |
 | `kernel_version` | Only on `vllm_dashboard_node_info` |

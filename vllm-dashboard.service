@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 User=vllm-dashboard
 Group=vllm-dashboard
+# The file is optional. Without it, the dashboard uses the host name as the
+# node identity and finds the local vLLM servers in /proc.
 Environment=VLLM_DASHBOARD_CONFIG=/etc/vllm-dashboard/dashboard.json
 ExecStart=/usr/local/bin/vllm-dashboard
 Restart=on-failure
