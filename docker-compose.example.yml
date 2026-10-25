@@ -1,8 +1,17 @@
-# Example fleet collector deployment.
+# Example deployment.
+#
+# Fleet collector:
 #
 #   cp config.example.json dashboard.json
 #   # Set "listen" to "0.0.0.0:9090" and point "peers" at your node agents.
-#   docker compose -f docker-compose.example.yml up -d
+#   docker compose -f docker-compose.example.yml up -d vllm-dashboard
+#
+# The collector can also run without a file:
+#   VLLM_DASHBOARD_PEERS=http://192.0.2.10:9090,http://192.0.2.11:9090
+#
+# Node agent: the "node-agent" service needs no configuration file. It finds
+# the local vLLM and TensorFold servers in /proc. For this, it shares the PID
+# namespace and the network of the host.
 #
 # The dashboard has no built-in authentication. Keep the published port on a
 # trusted network or put an authenticating reverse proxy in front of it.
@@ -14,6 +23,20 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./dashboard.json:/etc/vllm-dashboard/dashboard.json:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  node-agent:
+    profiles: ["node"]
+    image: ghcr.io/awlx/vllm-dashboard:latest
+    restart: unless-stopped
+    pid: host
+    network_mode: host
+    environment:
+      VLLM_DASHBOARD_LISTEN: "0.0.0.0:9090"
     read_only: true
     cap_drop:
       - ALL

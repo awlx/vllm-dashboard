@@ -19,7 +19,7 @@ collector. A container image is also available; see [Docker](#docker).
 - Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
 - vLLM command-line and systemd service metadata
 - Peer aggregation with graceful handling of unavailable nodes
-- Strict JSON configuration and no automatic network discovery
+- Optional JSON configuration. Local vLLM and TensorFold servers are found in `/proc`. There is no network scan.
 - Responsive, dependency-free UI embedded in the binary
 
 ## Requirements
@@ -30,8 +30,8 @@ collector. A container image is also available; see [Docker](#docker).
 - `nvidia-smi` or `amd-smi` (ROCm 6.x or 7.x) for GPU metrics
 - `systemctl` for optional service metadata
 
-The fleet collector can run without vLLM or a GPU when its local
-`models` list is empty.
+The fleet collector can run without vLLM or a GPU. It then has no local
+models.
 
 TensorFold's Python exporter (vLLM-compatible metrics plus live `/health`
 counters) and native exporter (TensorFold-only metrics) are supported.
@@ -117,12 +117,11 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-d
 
 ### Single-Node Quick Start
 
-Create the node configuration, add all local vLLM metrics endpoints to its
-`models` list, and start the dashboard:
+Start the dashboard. It needs no configuration file. It finds the local vLLM
+and TensorFold servers in `/proc`:
 
 ```sh
-cp config.node.example.json dashboard.json
-VLLM_DASHBOARD_CONFIG=./dashboard.json ./vllm-dashboard
+./vllm-dashboard
 ```
 
 Open `http://<node-address>:9090`. If you run the browser on the same machine,
@@ -130,12 +129,11 @@ use `http://localhost:9090`.
 
 ### Multi-Node Quick Start
 
-On each compute node, copy the binary and use a unique node configuration:
+On each compute node, copy the binary and start it. The node key and name
+come from the host name:
 
 ```sh
-cp config.node.example.json dashboard.json
-# Edit node.key, node.hostname, listen, and node.models for this machine.
-VLLM_DASHBOARD_CONFIG=./dashboard.json ./vllm-dashboard
+./vllm-dashboard
 ```
 
 Verify each agent from the collector machine before continuing:
@@ -149,36 +147,52 @@ On the collector machine, configure the reachable agent URLs and start another
 copy of the same binary:
 
 ```sh
-cp config.example.json dashboard.json
-# Edit peers so each URL points to a running node agent.
-VLLM_DASHBOARD_CONFIG=./dashboard.json ./vllm-dashboard
+VLLM_DASHBOARD_PEERS=http://<node-a-address>:9090,http://<node-b-address>:9090 ./vllm-dashboard
 ```
+
+You can also put the peer URLs in a file, see
+[`config.example.json`](config.example.json).
 
 Open `http://localhost:9090` on the collector machine, or use the collector's
 reverse-proxied URL. You do not need to open the individual node dashboards.
 
 ## Configuration
 
-Configuration is loaded from the path in `VLLM_DASHBOARD_CONFIG`. Unknown JSON
-fields are rejected so misspelled settings do not silently pass.
+The configuration file is optional. Set its path in `VLLM_DASHBOARD_CONFIG`.
+If the variable is not set or the file does not exist, the dashboard uses the
+defaults. Unknown JSON fields are rejected so misspelled settings do not
+silently pass. Obsolete fields of old files are ignored and logged.
+
+| Setting | Default | Environment variable |
+| --- | --- | --- |
+| `listen` | `:9090` | `VLLM_DASHBOARD_LISTEN` |
+| `poll_interval` | `1s` | `VLLM_DASHBOARD_POLL_INTERVAL` |
+| `node.key`, `node.name` | Short host name | `VLLM_DASHBOARD_HOSTNAME` |
+| `node.hostname` | Full host name, if it is a DNS name | `VLLM_DASHBOARD_HOSTNAME` |
+| `node.discover` | `true` | `VLLM_DASHBOARD_DISCOVER` |
+| `node.models` | Found in `/proc` | None |
+| `peers` | None | `VLLM_DASHBOARD_PEERS` (added to the file peers) |
 
 ### Compute Node
 
-Run an instance beside each vLLM server. Start with
+Run an instance beside the vLLM servers. It finds each `vllm serve`,
+`python -m vllm.entrypoints.openai.api_server`, and TensorFold server process,
+reads its port, and checks `http://127.0.0.1:<port>/metrics`. The model name
+comes from `--served-model-name` or `/v1/models`. The systemd unit comes from
+the cgroup of the process. The dashboard looks for new and stopped servers
+every 30 seconds. A stopped server shows as offline for 5 minutes and is then
+removed.
+
+Add a model to `node.models` only when discovery cannot find it, for example
+when the server runs in a container or on another port mapping. A model needs
+`port` or `metrics_url`. All other fields are optional. See
 [`config.node.example.json`](config.node.example.json):
 
 ```json
 {
-  "listen": "0.0.0.0:9090",
-  "poll_interval": "1s",
   "node": {
-    "key": "node-a",
-    "hostname": "node-a.example.net",
     "models": [
       {
-        "key": "model-a",
-        "name": "Model A",
-        "metrics_url": "http://127.0.0.1:8000/metrics",
         "port": "8000",
         "unit": "vllm-model-a.service"
       }
@@ -187,8 +201,8 @@ Run an instance beside each vLLM server. Start with
 }
 ```
 
-`key` values must be stable, unique lowercase identifiers. `hostname` is
-optional; when present, its first DNS label is used as the display name.
+`key` values must be stable, unique lowercase identifiers. If you do not set
+them, the dashboard makes them from the model name or the port.
 
 ### Poll Interval
 
@@ -201,7 +215,7 @@ file value.
 {
   "listen": "0.0.0.0:9090",
   "poll_interval": "2s",
-  "node": { "key": "node-a", "hostname": "node-a.example.net", "models": [] }
+  "node": { "key": "node-a", "hostname": "node-a.example.net" }
 }
 ```
 
@@ -228,14 +242,15 @@ file value.
   `systemctl`) are cached for up to 30 seconds and are read again when a model
   comes back online.
 
-Set `user_unit` to `true` when the configured service is managed by
-`systemctl --user`. The dashboard process must have permission to inspect the
-service and process metadata you configure.
+The dashboard finds out if a unit belongs to the system manager or to a user
+manager (`systemctl --user`). The dashboard process must have permission to
+inspect the service and process metadata.
 
 ### Fleet Collector
 
-Run another instance with an empty local model list and peer URLs for each
-compute-node agent. Start with [`config.example.json`](config.example.json).
+Run another instance with the URL of each compute-node agent in `peers`. A
+peer entry is a URL string. The collector reads the key and the name of each
+peer from the `GET /api/node` response of that peer. Start with [`config.example.json`](config.example.json).
 The example uses the documentation-only `192.0.2.0/24` network.
 
 The collector forwards model-specific requests to the owning peer and combines
@@ -294,8 +309,8 @@ metadata, prefer the binary with the systemd unit on compute nodes.
 - **GPU metrics** need the
   [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
   and `--gpus all`; the toolkit injects `nvidia-smi` into the container.
-- **vLLM process metadata** (command line, uptime) requires `--pid host` so
-  `pgrep`, `ps`, and `/proc/<pid>` can see the vLLM processes.
+- **Model discovery** and **vLLM process metadata** (command line, uptime)
+  require `--pid host` so `ps` and `/proc/<pid>` can see the vLLM processes.
 - **Network counters** come from `/proc/net/dev` and only reflect host
   interfaces with `--network host`. Host networking also lets `metrics_url`
   values such as `http://127.0.0.1:8000/metrics` reach vLLM.
@@ -306,7 +321,7 @@ metadata, prefer the binary with the systemd unit on compute nodes.
 ```sh
 docker run -d --name vllm-dashboard-agent --read-only --cap-drop ALL \
   --gpus all --pid host --network host \
-  -v "$PWD/dashboard.json:/etc/vllm-dashboard/dashboard.json:ro" \
+  -e VLLM_DASHBOARD_LISTEN=0.0.0.0:9090 \
   ghcr.io/awlx/vllm-dashboard:latest
 ```
 
@@ -332,6 +347,7 @@ hardened starting point:
 sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin vllm-dashboard
 sudo install -m 0755 vllm-dashboard /usr/local/bin/vllm-dashboard
 sudo install -d -o vllm-dashboard -g vllm-dashboard /etc/vllm-dashboard
+# Optional: install a configuration file.
 sudo install -m 0640 -o vllm-dashboard -g vllm-dashboard \
   dashboard.json /etc/vllm-dashboard/dashboard.json
 sudo install -m 0644 vllm-dashboard.service /etc/systemd/system/
@@ -347,6 +363,7 @@ The account-creation command is suitable for distributions that provide
 The embedded UI uses these read-only JSON endpoints:
 
 - `GET /api/overview` - current status for all models
+- `GET /api/node` - key, name, and hostname of this node
 - `GET /api/metrics?model=<key>` - five-minute history
 - `GET /api/metrics/long?model=<key>` - 24-hour history
 - `GET /api/info?model=<key>` - model and service metadata
