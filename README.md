@@ -13,7 +13,7 @@ collector. A container image is also available; see [Docker](#docker).
 
 - Multiple compute nodes and models in one fleet overview
 - Globally scoped `node/model` identifiers
-- Two-second live charts and one-minute 24-hour in-memory history
+- Live charts with a configurable poll interval (default one second) and one-minute 24-hour in-memory history
 - Throughput, latency, request, KV-cache, prefix-cache, and speculative-decoding metrics
 - GPU utilization, temperature, power, and core clock from `nvidia-smi` or `amd-smi`
 - Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
@@ -153,6 +153,7 @@ Run an instance beside each vLLM server. Start with
 ```json
 {
   "listen": "0.0.0.0:9090",
+  "poll_interval": "1s",
   "node": {
     "key": "node-a",
     "hostname": "node-a.example.net",
@@ -171,6 +172,34 @@ Run an instance beside each vLLM server. Start with
 
 `key` values must be stable, unique lowercase identifiers. `hostname` is
 optional; when present, its first DNS label is used as the display name.
+
+### Poll Interval
+
+`poll_interval` sets how often the dashboard scrapes vLLM, the GPU tool, and
+host counters. Use a Go duration string from `500ms` to `10s`. The default is
+`1s`. The `VLLM_DASHBOARD_POLL_INTERVAL` environment variable overrides the
+file value.
+
+```json
+{
+  "listen": "0.0.0.0:9090",
+  "poll_interval": "2s",
+  "node": { "key": "node-a", "hostname": "node-a.example.net", "models": [] }
+}
+```
+
+- The live charts always show five minutes. The number of samples follows
+  the interval: 300 at `1s`, 150 at `2s`, 600 at `500ms`.
+- The 24-hour charts keep one point per minute. Each point is the average of
+  all polls in that minute. Latency and speculative-decoding points use only
+  polls that had activity. Counters use the last poll of the minute.
+- The browser reads the interval from `GET /api/settings` and refreshes at
+  the same rate.
+- Use the same interval on all agents and the collector. Fleet charts combine
+  node series sample by sample.
+- A short interval increases the load on the vLLM `/metrics` endpoint and on
+  the GPU tool. If a poll takes longer than the interval, the next poll starts
+  when the previous poll ends. Polls never overlap.
 
 Set `user_unit` to `true` when the configured service is managed by
 `systemctl --user`. The dashboard process must have permission to inspect the
@@ -295,6 +324,7 @@ The embedded UI uses these read-only JSON endpoints:
 - `GET /api/metrics/long?model=<key>` - 24-hour history
 - `GET /api/info?model=<key>` - model and service metadata
 - `GET /api/tokens?model=<key>` - one-hour and 24-hour token usage
+- `GET /api/settings` - poll interval and history windows of this process
 
 Use `model=all` for aggregate metrics. Fleet model keys use the
 `node/model` form.
