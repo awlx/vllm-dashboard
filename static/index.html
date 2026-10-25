@@ -262,7 +262,7 @@
   <div class="topbar">
     <div>
       <h1><span class="dot"></span>vLLM Fleet Metrics</h1>
-      <div class="sub" id="view-subtitle">All model instances · refreshing every 2s</div>
+      <div class="sub" id="view-subtitle">All model instances</div>
     </div>
     <div class="model-switcher" role="group" aria-label="Model view">
       <button type="button" class="active" data-model="all">All models</button>
@@ -373,7 +373,7 @@
     </div>
   </div>
 
-  <h2 class="section-title">Last 24 Hours <span class="section-note">(1 min resolution, resets on service restart)</span></h2>
+  <h2 class="section-title">Last 24 Hours <span class="section-note">(1 min averages, resets on service restart)</span></h2>
   <div class="charts">
     <div class="chart-card">
       <div class="label">GPU Utilization %</div>
@@ -639,6 +639,28 @@ const charts24h = {
 
 let selectedModel = 'all';
 let overviewData = [];
+let pollIntervalMs = 2000;
+
+function formatInterval(ms) {
+  return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+}
+
+function updateSubtitle(label) {
+  document.getElementById('view-subtitle').textContent = `${label} · refreshing every ${formatInterval(pollIntervalMs)}`;
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    if (!res.ok) return;
+    const settings = await res.json();
+    if (Number.isFinite(settings.poll_interval_ms) && settings.poll_interval_ms >= 250) {
+      pollIntervalMs = settings.poll_interval_ms;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>'"]/g, char => ({
@@ -1003,7 +1025,7 @@ document.querySelector('.model-switcher').addEventListener('click', event => {
     document.querySelectorAll('.model-switcher button').forEach(item => item.classList.toggle('active', item === button));
     const model = overviewData.find(item => item.key === selectedModel);
     const label = selectedModel === 'all' ? 'All model instances' : (model?.name || button.textContent);
-    document.getElementById('view-subtitle').textContent = `${label} · refreshing every 2s`;
+    updateSubtitle(label);
     updateHostMetricVisibility();
     refresh();
     refresh24h();
@@ -1011,12 +1033,16 @@ document.querySelector('.model-switcher').addEventListener('click', event => {
     refreshTokens();
 });
 
+updateSubtitle('All model instances');
 refreshOverview();
-refresh();
 refresh24h();
 refreshInfo();
 refreshTokens();
-setInterval(refresh, 2000);
+loadSettings().then(() => {
+  updateSubtitle(selectedModel === 'all' ? 'All model instances' : (overviewData.find(item => item.key === selectedModel)?.name || selectedModel));
+  refresh();
+  setInterval(refresh, pollIntervalMs);
+});
 setInterval(refresh24h, 30000);
 setInterval(refreshInfo, 10000);
 setInterval(refreshTokens, 15000);

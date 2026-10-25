@@ -91,9 +91,11 @@ type PeerConfig struct {
 }
 
 type DashboardConfig struct {
-	Listen string       `json:"listen"`
-	Node   NodeConfig   `json:"node"`
-	Peers  []PeerConfig `json:"peers,omitempty"`
+	Listen string `json:"listen"`
+	// PollInterval is a Go duration string, for example "1s" or "500ms".
+	PollInterval string       `json:"poll_interval,omitempty"`
+	Node         NodeConfig   `json:"node"`
+	Peers        []PeerConfig `json:"peers,omitempty"`
 }
 
 type ModelState struct {
@@ -115,6 +117,7 @@ type ModelState struct {
 	LastSpecDraft         float64
 	LastScrape            time.Time
 	LastPollSuccess       bool
+	Rollup                sampleRollup
 }
 
 type ModelOverview struct {
@@ -144,11 +147,42 @@ type ServerInfo struct {
 }
 
 const (
-	historySize  = 150 // 5 min at 2s resolution
-	scrapeEvery  = 2 * time.Second
-	longInterval = 60 * time.Second // 24h at 1 min resolution
-	longSize     = 24 * 60
+	defaultPollInterval = 2 * time.Second
+	minPollInterval     = 500 * time.Millisecond
+	// The 30s telemetry freshness window must cover several polls.
+	maxPollInterval = 10 * time.Second
+	historyWindow   = 5 * time.Minute
+	longInterval    = 60 * time.Second // 24h at 1 min resolution
+	longSize        = 24 * 60
+	pollIntervalEnv = "VLLM_DASHBOARD_POLL_INTERVAL"
 )
+
+// pollInterval is set by configureRuntime before polling starts.
+var pollInterval = defaultPollInterval
+
+// historySize keeps historyWindow of live samples at the poll interval.
+func historySize() int {
+	return max(1, int((historyWindow+pollInterval-1)/pollInterval))
+}
+
+// onlineWindow tolerates two missed polls and slow sequential scrapes.
+func onlineWindow() time.Duration {
+	return max(3*pollInterval, 6*time.Second)
+}
+
+func parsePollInterval(value string) (time.Duration, error) {
+	if value == "" {
+		return defaultPollInterval, nil
+	}
+	interval, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid poll_interval %q: %w", value, err)
+	}
+	if interval < minPollInterval || interval > maxPollInterval {
+		return 0, fmt.Errorf("poll_interval %s must be between %s and %s", interval, minPollInterval, maxPollInterval)
+	}
+	return interval, nil
+}
 
 var (
 	mu                        sync.RWMutex
@@ -199,6 +233,9 @@ func loadConfig(path string) (DashboardConfig, error) {
 	if cfg.Listen == "" {
 		return DashboardConfig{}, fmt.Errorf("listen must not be empty")
 	}
+	if _, err := parsePollInterval(cfg.PollInterval); err != nil {
+		return DashboardConfig{}, err
+	}
 	if !configKeyRe.MatchString(cfg.Node.Key) {
 		return DashboardConfig{}, fmt.Errorf("invalid node key %q", cfg.Node.Key)
 	}
@@ -235,6 +272,10 @@ func configureRuntime(cfg DashboardConfig) {
 	defer mu.Unlock()
 	config = cfg
 	models = cfg.Node.Models
+	pollInterval = defaultPollInterval
+	if interval, err := parsePollInterval(cfg.PollInterval); err == nil {
+		pollInterval = interval
+	}
 	latestHostSample = Sample{}
 	lastCPUTotal, lastCPUIdle = 0, 0
 	lastNetRx, lastNetTx = 0, 0
@@ -765,16 +806,85 @@ func pollModel(model ModelConfig, shared Sample, now time.Time) {
 	}
 
 	state.History = append(state.History, s)
-	if len(state.History) > historySize {
-		state.History = state.History[len(state.History)-historySize:]
+	if limit := historySize(); len(state.History) > limit {
+		state.History = state.History[len(state.History)-limit:]
 	}
-	if state.LastLongSample.IsZero() || now.Sub(state.LastLongSample) >= longInterval {
-		state.LongHistory = append(state.LongHistory, s)
-		if len(state.LongHistory) > longSize {
-			state.LongHistory = state.LongHistory[len(state.LongHistory)-longSize:]
-		}
+	appendLongSample(state, s, now)
+}
+
+// appendLongSample adds one 24h point per longInterval. The point is the
+// average of all polls since the previous point, so the 24h charts do not
+// depend on the poll interval. The schedule stays anchored to whole minutes
+// after the first point, unless polling stops for two intervals or more.
+func appendLongSample(state *ModelState, s Sample, now time.Time) {
+	state.Rollup.add(s)
+	if !state.LastLongSample.IsZero() && now.Sub(state.LastLongSample) < longInterval {
+		return
+	}
+	state.LongHistory = append(state.LongHistory, state.Rollup.result(s))
+	if len(state.LongHistory) > longSize {
+		state.LongHistory = state.LongHistory[len(state.LongHistory)-longSize:]
+	}
+	state.Rollup = sampleRollup{}
+	if state.LastLongSample.IsZero() || now.Sub(state.LastLongSample) >= 2*longInterval {
 		state.LastLongSample = now
+	} else {
+		state.LastLongSample = state.LastLongSample.Add(longInterval)
 	}
+}
+
+// sampleRollup averages samples. Gauges and rates use all samples. Latency
+// and speculative-decoding values use only samples with activity, because a
+// zero there means "no requests in this poll", not "zero latency".
+// Counters and cumulative ratios use the latest sample.
+type sampleRollup struct {
+	count       int
+	sum         Sample
+	activeCount [5]int
+}
+
+func averagedFields(s *Sample) [16]*float64 {
+	return [16]*float64{&s.Running, &s.Waiting, &s.KVCachePct, &s.PromptTokPerSec, &s.GenTokPerSec, &s.ReqPerSec,
+		&s.GPUUtilPct, &s.GPUTempC, &s.GPUPowerW, &s.GPUClockMHz, &s.CPUUtilPct, &s.CPUClockMHz,
+		&s.MemUsedPct, &s.MemUsedGB, &s.NetRxMbps, &s.NetTxMbps}
+}
+
+func activeFields(s *Sample) [5]*float64 {
+	return [5]*float64{&s.TTFTMs, &s.InterTokenMs, &s.E2ELatencyMs, &s.SpecAcceptPct, &s.SpecMeanAccepted}
+}
+
+func (r *sampleRollup) add(s Sample) {
+	r.count++
+	sums := averagedFields(&r.sum)
+	for index, value := range averagedFields(&s) {
+		*sums[index] += *value
+	}
+	activeSums := activeFields(&r.sum)
+	for index, value := range activeFields(&s) {
+		if *value > 0 {
+			*activeSums[index] += *value
+			r.activeCount[index]++
+		}
+	}
+}
+
+func (r *sampleRollup) result(latest Sample) Sample {
+	out := latest
+	if r.count == 0 {
+		return out
+	}
+	sums := averagedFields(&r.sum)
+	for index, field := range averagedFields(&out) {
+		*field = *sums[index] / float64(r.count)
+	}
+	activeSums := activeFields(&r.sum)
+	for index, field := range activeFields(&out) {
+		*field = 0
+		if r.activeCount[index] > 0 {
+			*field = *activeSums[index] / float64(r.activeCount[index])
+		}
+	}
+	return out
 }
 
 // tokensInWindow returns cumulative prompt/gen token deltas over the trailing
@@ -1218,7 +1328,7 @@ func localOverview() []ModelOverview {
 		if len(state.History) > 0 {
 			item.Latest = state.History[len(state.History)-1]
 		}
-		item.Online = !state.LastScrape.IsZero() && time.Since(state.LastScrape) < 3*scrapeEvery
+		item.Online = !state.LastScrape.IsZero() && time.Since(state.LastScrape) < onlineWindow()
 		item.Tokens = usageForState(state)
 		mu.RUnlock()
 		overview = append(overview, item)
@@ -1260,6 +1370,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if value := os.Getenv(pollIntervalEnv); value != "" {
+		if _, err := parsePollInterval(value); err != nil {
+			log.Fatalf("%s: %v", pollIntervalEnv, err)
+		}
+		cfg.PollInterval = value
+	}
 	configureRuntime(cfg)
 	if out, err := exec.Command("vllm", "--version").Output(); err == nil {
 		vllmVersion = strings.TrimSpace(string(out))
@@ -1269,16 +1385,45 @@ func main() {
 		modelStates[model.Key].CounterStartedAt = modelProcessStartedAt(model)
 	}
 
-	go func() {
-		for {
-			poll()
-			time.Sleep(scrapeEvery)
-		}
-	}()
+	go runPollLoop()
 
-	registerMetricsHandlers(http.DefaultServeMux)
+	mux := newServeMux()
 
-	http.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
+	log.Printf("vllm-dashboard node %q listening on %s, polling every %s", displayName(config.Node.Name, config.Node.Hostname), config.Listen, pollInterval)
+	log.Fatal(http.ListenAndServe(config.Listen, mux))
+}
+
+// runPollLoop polls on a fixed cadence. A ticker never runs polls in
+// parallel: if one poll is slow, the next poll starts when it ends.
+func runPollLoop() {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		poll()
+		<-ticker.C
+	}
+}
+
+// DashboardSettings lets the browser follow the server poll cadence.
+type DashboardSettings struct {
+	PollIntervalMs       int64 `json:"poll_interval_ms"`
+	HistoryWindowSeconds int64 `json:"history_window_seconds"`
+	LongIntervalSeconds  int64 `json:"long_interval_seconds"`
+}
+
+func currentSettings() DashboardSettings {
+	return DashboardSettings{
+		PollIntervalMs:       pollInterval.Milliseconds(),
+		HistoryWindowSeconds: int64(historyWindow / time.Second),
+		LongIntervalSeconds:  int64(longInterval / time.Second),
+	}
+}
+
+func newServeMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	registerMetricsHandlers(mux)
+
+	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		samples, err := metricsForRequest(requestedModel(r), false)
 		if err != nil {
 			http.Error(w, "model unavailable", http.StatusBadGateway)
@@ -1287,7 +1432,7 @@ func main() {
 		writeJSON(w, samples)
 	})
 
-	http.HandleFunc("/api/metrics/long", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/metrics/long", func(w http.ResponseWriter, r *http.Request) {
 		samples, err := metricsForRequest(requestedModel(r), true)
 		if err != nil {
 			http.Error(w, "model unavailable", http.StatusBadGateway)
@@ -1296,7 +1441,7 @@ func main() {
 		writeJSON(w, samples)
 	})
 
-	http.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
 		key := requestedModel(r)
 		if localKey, ok := localModelKey(key); ok {
 			writeJSON(w, buildServerInfo(modelConfig(localKey)))
@@ -1315,7 +1460,7 @@ func main() {
 		writeJSON(w, info)
 	})
 
-	http.HandleFunc("/api/tokens", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/tokens", func(w http.ResponseWriter, r *http.Request) {
 		key := requestedModel(r)
 		var usage TokenUsage
 		if key == "" || key == "all" {
@@ -1344,16 +1489,18 @@ func main() {
 		writeJSON(w, usage)
 	})
 
-	http.HandleFunc("/api/overview", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, currentSettings())
+	})
+
+	mux.HandleFunc("/api/overview", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, combinedOverview())
 	})
 
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	http.Handle("/", http.FileServer(http.FS(sub)))
-
-	log.Printf("vllm-dashboard node %q listening on %s", displayName(config.Node.Name, config.Node.Hostname), config.Listen)
-	log.Fatal(http.ListenAndServe(config.Listen, nil))
+	mux.Handle("/", http.FileServer(http.FS(sub)))
+	return mux
 }

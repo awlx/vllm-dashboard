@@ -1,5 +1,6 @@
 {
   "listen": "0.0.0.0:9090",
+  "poll_interval": "2s",
   "node": {
     "key": "node-a",
     "hostname": "node-a.example.net",
