@@ -71,6 +71,7 @@
     color: #071217;
     background: var(--accent);
   }
+  [hidden] { display: none !important; }
   .overview-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -928,12 +929,13 @@ function formatTokens(n) {
 }
 
 function updateHostMetricVisibility() {
-  const showNodeOverview = selectedModel === 'all';
+  const showFleetOverview = selectedModel === 'all';
   document.querySelectorAll('[data-host-metric]').forEach(card => {
-    card.hidden = showNodeOverview;
+    card.hidden = showFleetOverview;
   });
-  document.getElementById('node-overview-title').hidden = !showNodeOverview;
-  document.getElementById('node-overview').hidden = !showNodeOverview;
+  document.getElementById('model-overview').hidden = !showFleetOverview;
+  document.getElementById('node-overview-title').hidden = !showFleetOverview;
+  document.getElementById('node-overview').hidden = !showFleetOverview;
 }
 
 async function refreshTokens() {
