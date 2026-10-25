@@ -27,7 +27,7 @@ collector.
 - Linux on monitored compute nodes
 - Go 1.26 or newer to build
 - A vLLM server exposing its Prometheus-compatible `/metrics` endpoint
-- `nvidia-smi` or `amd-smi` for GPU metrics
+- `nvidia-smi` or `amd-smi` (ROCm 6.x or 7.x) for GPU metrics
 - `systemctl` for optional service metadata
 
 The fleet collector can run without vLLM or a GPU when its local
@@ -43,7 +43,7 @@ JSON API. No collector or peer configuration is needed.
 
 ```text
 Browser -> Dashboard -> vLLM /metrics
-              -> nvidia-smi, /proc, systemd
+              -> nvidia-smi or amd-smi, /proc, systemd
 ```
 
 One node can monitor multiple local vLLM servers. Add one entry to `node.models`
@@ -237,6 +237,11 @@ release; nodes running an older agent omit it.
 Peer requests share a four-second deadline and do not recursively follow peers.
 Hardware collection failures inherit the existing dashboard's zero-value behavior;
 for example, a collector without a GPU reports zero GPU values, not sensor health.
+The dashboard uses `nvidia-smi` first. When it reports no values, the dashboard
+uses `amd-smi`. For AMD GPUs, utilization, temperature, and clock are averages
+over the GPUs that report a value, and power is the sum. Temperature uses the
+edge sensor, or the hotspot sensor when edge is not available (for example on
+MI300X). Each GPU tool call has a five-second timeout.
 
 Scrape the **collector only** for fleet totals to avoid counting the same agents
 twice. Example Prometheus configuration (replace the documentation address):
