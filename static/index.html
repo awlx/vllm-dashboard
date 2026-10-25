@@ -430,6 +430,20 @@
   <div class="footer">Live metrics from configured vLLM nodes</div>
 
 <script>
+// Charts draw only when they are on screen and only once per animation
+// frame. The canvas is resized only when its size changes, and the legend
+// DOM is rebuilt only when the series change.
+const chartObserver = 'IntersectionObserver' in window
+  ? new IntersectionObserver(entries => entries.forEach(entry => {
+      const chart = entry.target.__chart;
+      chart.onScreen = entry.isIntersecting;
+      if (chart.onScreen && chart.dirty) chart.requestRender();
+    }), { rootMargin: '200px 0px' })
+  : null;
+const chartResizeObserver = 'ResizeObserver' in window
+  ? new ResizeObserver(entries => entries.forEach(entry => entry.target.__chart.requestRender()))
+  : null;
+
 class LineChart {
   constructor(canvasId, tooltipId, legendId) {
     this.canvas = document.getElementById(canvasId);
@@ -441,6 +455,15 @@ class LineChart {
     this.opts = {};
     this.hoverIndex = null;
     this.hiddenSeries = new Set();
+    this.onScreen = !chartObserver;
+    this.dirty = false;
+    this.frame = 0;
+    this.pixelSize = '';
+    this.legendKey = '';
+    this.legendValues = [];
+    this.canvas.__chart = this;
+    if (chartObserver) chartObserver.observe(this.canvas);
+    if (chartResizeObserver) chartResizeObserver.observe(this.canvas);
 
     this.legendEl.addEventListener('click', (event) => {
       const item = event.target.closest('[data-series-id]');
@@ -448,21 +471,23 @@ class LineChart {
       const id = item.dataset.seriesId;
       if (this.hiddenSeries.has(id)) this.hiddenSeries.delete(id);
       else this.hiddenSeries.add(id);
-      this.render();
+      this.requestRender();
     });
 
     this.canvas.addEventListener('mousemove', (e) => {
-      const rect = this.canvas.getBoundingClientRect();
-      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
       const len = this.times.length;
       if (len < 2) return;
-      this.hoverIndex = Math.round(frac * (len - 1));
-      this.render();
+      const rect = this.canvas.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const index = Math.round(frac * (len - 1));
+      if (index === this.hoverIndex) return;
+      this.hoverIndex = index;
+      this.requestRender();
     });
     this.canvas.addEventListener('mouseleave', () => {
       this.hoverIndex = null;
       this.tooltip.style.display = 'none';
-      this.render();
+      this.requestRender();
     });
   }
 
@@ -470,25 +495,70 @@ class LineChart {
     this.series = series;
     this.times = times;
     this.opts = opts;
-    this.render();
+    // Build the legend at once, also off screen, so that the card height
+    // does not change when the chart scrolls into view.
+    if (!this.onScreen) this.renderLegend(series, times.length - 1, true);
+    this.requestRender();
+  }
+
+  requestRender() {
+    this.dirty = true;
+    if (!this.onScreen || document.hidden || this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      if (!this.onScreen || document.hidden) return;
+      this.dirty = false;
+      this.render();
+    });
+  }
+
+  resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    const size = `${w}x${h}@${dpr}`;
+    if (size !== this.pixelSize) {
+      this.pixelSize = size;
+      this.canvas.width = Math.round(w * dpr);
+      this.canvas.height = Math.round(h * dpr);
+    }
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w, h };
+  }
+
+  renderLegend(series, idx, onlyIfChanged = false) {
+    const { opts } = this;
+    const key = JSON.stringify(series.map(s => [s.id || s.label, s.label, s.color, s.axis || '', this.hiddenSeries.has(s.id || s.label)]));
+    if (key === this.legendKey && onlyIfChanged) return;
+    if (key !== this.legendKey) {
+      this.legendKey = key;
+      this.legendEl.innerHTML = series.map(s => {
+        const id = s.id || s.label;
+        const hidden = this.hiddenSeries.has(id);
+        const side = s.axis === 'right' ? ' <span class="legend-side">right axis</span>' : '';
+        return `<span class="legend-item${hidden ? ' hidden' : ''}" data-series-id="${esc(id)}" aria-pressed="${!hidden}"><span class="legend-swatch" style="background:${s.color}"></span>${esc(s.label)}${side}<span class="legend-value"></span></span>`;
+      }).join('');
+      this.legendValues = [...this.legendEl.querySelectorAll('.legend-value')];
+    }
+    series.forEach((s, i) => {
+      const v = s.data[idx];
+      const unit = s.axis === 'right' ? (opts.rightUnit || '') : (opts.unit || '');
+      const decimals = opts.smallValuePrecision && v < 0.1 ? 2 : (v < 10 ? 1 : 0);
+      setText(this.legendValues[i], v === undefined ? '–' : v.toFixed(decimals) + unit);
+    });
   }
 
   render() {
-    const { ctx, canvas, series, opts } = this;
+    const { ctx, series, opts } = this;
     const visibleSeries = series.filter(s => !this.hiddenSeries.has(s.id || s.label));
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    ctx.scale(dpr, dpr);
+    const { w, h } = this.resize();
     ctx.clearRect(0, 0, w, h);
 
     const leftSeries = visibleSeries.filter(s => s.axis !== 'right');
     const rightSeries = visibleSeries.filter(s => s.axis === 'right');
-    const leftVals = leftSeries.flatMap(s => s.data);
-    const rightVals = rightSeries.flatMap(s => s.data);
-    let leftMax = Math.max(opts.minMax || 1, ...leftVals, 0.001);
+    const seriesMax = list => list.reduce((acc, s) => s.data.reduce((m, v) => (v > m ? v : m), acc), 0.001);
+    let leftMax = Math.max(opts.minMax || 1, seriesMax(leftSeries));
     if (opts.fixedMax) leftMax = opts.fixedMax;
-    let rightMax = Math.max(opts.rightMinMax || 1, ...rightVals, 0.001);
+    let rightMax = Math.max(opts.rightMinMax || 1, seriesMax(rightSeries));
     if (opts.rightFixedMax) rightMax = opts.rightFixedMax;
     const maxOf = s => (s.axis === 'right' ? rightMax : leftMax);
     const len = this.times.length;
@@ -552,16 +622,7 @@ class LineChart {
 
     // legend, with live value shown next to each series (hovered point if hovering, else latest)
     const idx = this.hoverIndex !== null ? this.hoverIndex : len - 1;
-    this.legendEl.innerHTML = series.map(s => {
-      const id = s.id || s.label;
-      const hidden = this.hiddenSeries.has(id);
-      const v = s.data[idx];
-      const unit = s.axis === 'right' ? (opts.rightUnit || '') : (opts.unit || '');
-      const decimals = opts.smallValuePrecision && v < 0.1 ? 2 : (v < 10 ? 1 : 0);
-      const shown = v === undefined ? '–' : v.toFixed(decimals) + unit;
-      const side = s.axis === 'right' ? ' <span class="legend-side">right axis</span>' : '';
-      return `<span class="legend-item${hidden ? ' hidden' : ''}" data-series-id="${esc(id)}" aria-pressed="${!hidden}"><span class="legend-swatch" style="background:${s.color}"></span>${esc(s.label)}${side}<span class="legend-value">${shown}</span></span>`;
-    }).join('');
+    this.renderLegend(series, idx);
 
     if (this.hoverIndex === null || len < 2) {
       this.tooltip.style.display = 'none';
@@ -608,6 +669,17 @@ class LineChart {
     let left = x + 12;
     if (left + tw > w) left = x - tw - 12;
     this.tooltip.style.left = Math.max(0, left) + 'px';
+  }
+}
+
+function setText(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+function setHTML(el, html) {
+  if (el && el.__html !== html) {
+    el.__html = html;
+    el.innerHTML = html;
   }
 }
 
@@ -658,7 +730,7 @@ async function loadSettings() {
       pollIntervalMs = settings.poll_interval_ms;
     }
   } catch (e) {
-    console.error(e);
+    logError(e);
   }
 }
 
@@ -670,6 +742,20 @@ function esc(value) {
 
 function modelURL(path) {
   return `${path}?model=${encodeURIComponent(selectedModel)}`;
+}
+
+// All view requests share one AbortController. A model switch cancels the
+// requests of the previous view.
+let viewController = new AbortController();
+
+async function fetchJSON(url) {
+  const response = await fetch(url, { signal: viewController.signal });
+  if (!response.ok) throw new Error(`${url}: ${response.status}`);
+  return response.json();
+}
+
+function logError(e) {
+  if (e.name !== 'AbortError') console.error(e);
 }
 
 function renderSet(set, data) {
@@ -814,16 +900,18 @@ function renderAllSet(set, sharedData, histories) {
 
 async function fetchModelHistories(path) {
   const availableModels = overviewData;
-  return Promise.all(availableModels.map(async model => {
-    const response = await fetch(`${path}?model=${encodeURIComponent(model.key)}`);
-    return {
-      key: model.key,
-      name: model.name,
-      nodeKey: model.node_key,
-      nodeName: model.node_name,
-      samples: await response.json(),
-    };
-  }));
+  return Promise.all(availableModels.map(async model => ({
+    key: model.key,
+    name: model.name,
+    nodeKey: model.node_key,
+    nodeName: model.node_name,
+    samples: await fetchJSON(`${path}?model=${encodeURIComponent(model.key)}`),
+  })));
+}
+
+function setValue(id, text) {
+  const el = document.getElementById(id);
+  if (el) setText(el.firstChild, text);
 }
 
 // Applies a good/warn/bad class to a card's value element based on thresholds.
@@ -831,44 +919,41 @@ async function fetchModelHistories(path) {
 function setCardLevel(id, value, warnAt, badAt) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.classList.remove('good', 'warn', 'bad');
-  if (value >= badAt) el.classList.add('bad');
-  else if (value >= warnAt) el.classList.add('warn');
-  else el.classList.add('good');
+  const level = value >= badAt ? 'bad' : (value >= warnAt ? 'warn' : 'good');
+  for (const name of ['good', 'warn', 'bad']) el.classList.toggle(name, name === level);
 }
 
 async function refresh() {
   try {
     const model = selectedModel;
-    const [res, histories] = await Promise.all([
-      fetch(`/api/metrics?model=${model}`),
+    const [data, histories] = await Promise.all([
+      fetchJSON(modelURL('/api/metrics')),
       model === 'all' ? fetchModelHistories('/api/metrics') : Promise.resolve([]),
     ]);
-    const data = await res.json();
     if (model !== selectedModel) return;
     if (!data || !data.length) return;
     const last = data[data.length - 1];
 
-    document.getElementById('gpu_util').firstChild.textContent = last.gpu_util_pct.toFixed(0);
-    document.getElementById('gpu_temp').firstChild.textContent = last.gpu_temp_c.toFixed(0);
-    document.getElementById('gpu_power').firstChild.textContent = last.gpu_power_w.toFixed(1);
-    document.getElementById('kv_cache').firstChild.textContent = last.kv_cache_pct.toFixed(1);
-    document.getElementById('running').textContent = last.running.toFixed(0);
-    document.getElementById('waiting').textContent = last.waiting.toFixed(0);
-    document.getElementById('prompt_tps').firstChild.textContent = last.prompt_tps.toFixed(0);
-    document.getElementById('gen_tps').firstChild.textContent = last.gen_tps.toFixed(0);
-    document.getElementById('req_per_sec').firstChild.textContent = last.req_per_sec.toFixed(2);
-    document.getElementById('ttft').firstChild.textContent = last.ttft_ms.toFixed(0);
-    document.getElementById('itl').firstChild.textContent = last.inter_token_ms.toFixed(0);
-    document.getElementById('e2e_latency').firstChild.textContent = last.e2e_latency_ms.toFixed(0);
-    document.getElementById('prefix_hit').firstChild.textContent = last.prefix_cache_hit_pct.toFixed(1);
-    document.getElementById('spec_accept').firstChild.textContent = last.spec_accept_pct.toFixed(1);
-    document.getElementById('completed').textContent = last.completed_requests.toFixed(0);
-    document.getElementById('preemptions').textContent = last.preemptions_total.toFixed(0);
-    document.getElementById('cpu_util').firstChild.textContent = last.cpu_util_pct.toFixed(0);
-    document.getElementById('mem_used').firstChild.textContent = last.mem_used_pct.toFixed(0);
-    document.getElementById('net_rx').firstChild.textContent = last.net_rx_mbps.toFixed(last.net_rx_mbps < 0.1 ? 2 : 1);
-    document.getElementById('net_tx').firstChild.textContent = last.net_tx_mbps.toFixed(last.net_tx_mbps < 0.1 ? 2 : 1);
+    setValue('gpu_util', last.gpu_util_pct.toFixed(0));
+    setValue('gpu_temp', last.gpu_temp_c.toFixed(0));
+    setValue('gpu_power', last.gpu_power_w.toFixed(1));
+    setValue('kv_cache', last.kv_cache_pct.toFixed(1));
+    setText(document.getElementById('running'), last.running.toFixed(0));
+    setText(document.getElementById('waiting'), last.waiting.toFixed(0));
+    setValue('prompt_tps', last.prompt_tps.toFixed(0));
+    setValue('gen_tps', last.gen_tps.toFixed(0));
+    setValue('req_per_sec', last.req_per_sec.toFixed(2));
+    setValue('ttft', last.ttft_ms.toFixed(0));
+    setValue('itl', last.inter_token_ms.toFixed(0));
+    setValue('e2e_latency', last.e2e_latency_ms.toFixed(0));
+    setValue('prefix_hit', last.prefix_cache_hit_pct.toFixed(1));
+    setValue('spec_accept', last.spec_accept_pct.toFixed(1));
+    setText(document.getElementById('completed'), last.completed_requests.toFixed(0));
+    setText(document.getElementById('preemptions'), last.preemptions_total.toFixed(0));
+    setValue('cpu_util', last.cpu_util_pct.toFixed(0));
+    setValue('mem_used', last.mem_used_pct.toFixed(0));
+    setValue('net_rx', last.net_rx_mbps.toFixed(last.net_rx_mbps < 0.1 ? 2 : 1));
+    setValue('net_tx', last.net_tx_mbps.toFixed(last.net_tx_mbps < 0.1 ? 2 : 1));
 
     setCardLevel('gpu_temp', last.gpu_temp_c, 75, 85);
     setCardLevel('kv_cache', last.kv_cache_pct, 80, 93);
@@ -879,23 +964,22 @@ async function refresh() {
     if (model === 'all') renderAllSet(charts, data, histories);
     else renderSet(charts, data);
   } catch (e) {
-    console.error(e);
+    logError(e);
   }
 }
 
 async function refresh24h() {
   try {
     const model = selectedModel;
-    const [res, histories] = await Promise.all([
-      fetch(`/api/metrics/long?model=${model}`),
+    const [data, histories] = await Promise.all([
+      fetchJSON(modelURL('/api/metrics/long')),
       model === 'all' ? fetchModelHistories('/api/metrics/long') : Promise.resolve([]),
     ]);
-    const data = await res.json();
     if (model !== selectedModel) return;
     if (model === 'all') renderAllSet(charts24h, data, histories);
     else renderSet(charts24h, data);
   } catch (e) {
-    console.error(e);
+    logError(e);
   }
 }
 
@@ -910,15 +994,16 @@ async function refreshInfo() {
   try {
     if (selectedModel === 'all') {
       const online = overviewData.filter(model => model.online).length;
-      document.getElementById('badges').innerHTML = [
+      setHTML(document.getElementById('badges'), [
         ['instances', overviewData.length || 2],
         ['online', `${online}/${overviewData.length || 2}`],
         ['view', 'combined workload'],
-      ].map(([k, v]) => `<span class="badge"><span class="k">${k}</span><span class="v">${v}</span></span>`).join('');
+      ].map(([k, v]) => `<span class="badge"><span class="k">${k}</span><span class="v">${v}</span></span>`).join(''));
       return;
     }
-    const res = await fetch(modelURL('/api/info'));
-    const info = await res.json();
+    const model = selectedModel;
+    const info = await fetchJSON(modelURL('/api/info'));
+    if (model !== selectedModel) return;
     let spec = '\u2013';
     try {
       const sc = JSON.parse(info.speculative_config || 'null');
@@ -935,11 +1020,11 @@ async function refreshInfo() {
       ['uptime', formatUptime(info.service_uptime_seconds)],
       ['restarts', info.service_restarts || '0'],
     ];
-    document.getElementById('badges').innerHTML = badges.map(([k, v]) =>
+    setHTML(document.getElementById('badges'), badges.map(([k, v]) =>
       `<span class="badge"><span class="k">${k}</span><span class="v">${v}</span></span>`
-    ).join('');
+    ).join(''));
   } catch (e) {
-    console.error(e);
+    logError(e);
   }
 }
 
@@ -962,30 +1047,34 @@ function updateHostMetricVisibility() {
 
 async function refreshTokens() {
   try {
-    const res = await fetch(modelURL('/api/tokens'));
-    const u = await res.json();
-    document.getElementById('tok_in_1h').textContent = formatTokens(u.last_hour.prompt_tokens);
-    document.getElementById('tok_out_1h').textContent = 'out: ' + formatTokens(u.last_hour.gen_tokens);
-    document.getElementById('tok_total_1h').textContent = formatTokens(u.last_hour.total_tokens);
-    document.getElementById('tok_in_24h').textContent = formatTokens(u.last_24h.prompt_tokens);
-    document.getElementById('tok_out_24h').textContent = 'out: ' + formatTokens(u.last_24h.gen_tokens);
-    document.getElementById('tok_total_24h').textContent = formatTokens(u.last_24h.total_tokens);
+    const model = selectedModel;
+    const u = await fetchJSON(modelURL('/api/tokens'));
+    if (model !== selectedModel) return;
+    setText(document.getElementById('tok_in_1h'), formatTokens(u.last_hour.prompt_tokens));
+    setText(document.getElementById('tok_out_1h'), 'out: ' + formatTokens(u.last_hour.gen_tokens));
+    setText(document.getElementById('tok_total_1h'), formatTokens(u.last_hour.total_tokens));
+    setText(document.getElementById('tok_in_24h'), formatTokens(u.last_24h.prompt_tokens));
+    setText(document.getElementById('tok_out_24h'), 'out: ' + formatTokens(u.last_24h.gen_tokens));
+    setText(document.getElementById('tok_total_24h'), formatTokens(u.last_24h.total_tokens));
   } catch (e) {
-    console.error(e);
+    logError(e);
   }
 }
 
 async function refreshOverview() {
   try {
-    const res = await fetch('/api/overview');
-    overviewData = await res.json();
+    overviewData = await (await fetch('/api/overview')).json();
     const switcher = document.querySelector('.model-switcher');
-    switcher.innerHTML = [
-      `<button type="button" class="${selectedModel === 'all' ? 'active' : ''}" data-model="all">All models</button>`,
-      ...overviewData.map(model => `<button type="button" class="${selectedModel === model.key ? 'active' : ''}" data-model="${esc(model.key)}" title="${esc(model.node_name)}">${esc(model.name)}</button>`),
-    ].join('');
+    const switcherKey = JSON.stringify(overviewData.map(model => [model.key, model.name, model.node_name]));
+    if (switcher.__key !== switcherKey) {
+      switcher.__key = switcherKey;
+      switcher.innerHTML = [
+        `<button type="button" class="${selectedModel === 'all' ? 'active' : ''}" data-model="all">All models</button>`,
+        ...overviewData.map(model => `<button type="button" class="${selectedModel === model.key ? 'active' : ''}" data-model="${esc(model.key)}" title="${esc(model.node_name)}">${esc(model.name)}</button>`),
+      ].join('');
+    }
     const nodes = [...new Map(overviewData.map(model => [model.node_key, model])).values()];
-    document.getElementById('node-overview').innerHTML = nodes.map(node => {
+    setHTML(document.getElementById('node-overview'), nodes.map(node => {
       const latest = node.latest || {};
       return `<div class="model-card">
         <div class="model-identity">
@@ -997,8 +1086,8 @@ async function refreshOverview() {
         <div class="model-stat"><div class="k">Power</div><div class="v">${(latest.gpu_power_w || 0).toFixed(1)} W</div></div>
         <div class="model-stat"><div class="k">CPU / Memory</div><div class="v">${(latest.cpu_util_pct || 0).toFixed(0)}% / ${(latest.mem_used_pct || 0).toFixed(0)}%</div></div>
       </div>`;
-    }).join('');
-    document.getElementById('model-overview').innerHTML = overviewData.map(model => {
+    }).join(''));
+    setHTML(document.getElementById('model-overview'), overviewData.map(model => {
       const latest = model.latest || {};
       return `<div class="model-card">
         <div class="model-identity">
@@ -1010,43 +1099,97 @@ async function refreshOverview() {
         <div class="model-stat"><div class="k">Throughput</div><div class="v">${((latest.prompt_tps || 0) + (latest.gen_tps || 0)).toFixed(0)} tok/s</div></div>
         <div class="model-stat"><div class="k">Tokens 24h</div><div class="v">${formatTokens(model.tokens.last_24h.total_tokens)}</div></div>
       </div>`;
-    }).join('');
+    }).join(''));
     updateHostMetricVisibility();
     if (selectedModel === 'all') refreshInfo();
   } catch (e) {
-    console.error(e);
+    logError(e);
   }
 }
 
 document.querySelector('.model-switcher').addEventListener('click', event => {
   const button = event.target.closest('button[data-model]');
-  if (!button) return;
-    selectedModel = button.dataset.model;
-    document.querySelectorAll('.model-switcher button').forEach(item => item.classList.toggle('active', item === button));
-    const model = overviewData.find(item => item.key === selectedModel);
-    const label = selectedModel === 'all' ? 'All model instances' : (model?.name || button.textContent);
-    updateSubtitle(label);
-    updateHostMetricVisibility();
-    refresh();
-    refresh24h();
-    refreshInfo();
-    refreshTokens();
+  if (!button || button.dataset.model === selectedModel) return;
+  selectedModel = button.dataset.model;
+  viewController.abort();
+  viewController = new AbortController();
+  document.querySelectorAll('.model-switcher button').forEach(item => item.classList.toggle('active', item === button));
+  const model = overviewData.find(item => item.key === selectedModel);
+  const label = selectedModel === 'all' ? 'All model instances' : (model?.name || button.textContent);
+  updateSubtitle(label);
+  updateHostMetricVisibility();
+  viewTasks.forEach(task => task.now());
+});
+
+// Each task waits for its previous run to finish before it schedules the
+// next run, so slow responses never pile up. Tasks stop while the page is
+// hidden and run at once when it is visible again.
+function every(fn, intervalMs) {
+  let timer = 0;
+  let running = false;
+  let again = false;
+  const task = {
+    intervalMs,
+    async now() {
+      clearTimeout(timer);
+      timer = 0;
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      try {
+        await fn();
+      } finally {
+        running = false;
+      }
+      if (again) {
+        again = false;
+        return task.now();
+      }
+      task.schedule();
+    },
+    schedule() {
+      clearTimeout(timer);
+      timer = document.hidden ? 0 : setTimeout(() => task.now(), task.intervalMs);
+    },
+    stop() {
+      clearTimeout(timer);
+      timer = 0;
+    },
+  };
+  return task;
+}
+
+const overviewTask = every(refreshOverview, 10000);
+const liveTask = every(refresh, pollIntervalMs);
+const viewTasks = [
+  liveTask,
+  every(refresh24h, 60000),
+  every(refreshInfo, 10000),
+  every(refreshTokens, 15000),
+];
+const tasks = [overviewTask, ...viewTasks];
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    tasks.forEach(task => task.stop());
+    return;
+  }
+  tasks.forEach(task => task.now());
+  Object.values(charts).concat(Object.values(charts24h)).forEach(chart => {
+    if (chart.dirty) chart.requestRender();
+  });
 });
 
 updateSubtitle('All model instances');
-refreshOverview();
-refresh24h();
-refreshInfo();
-refreshTokens();
-loadSettings().then(() => {
+(async () => {
+  // The fleet view needs the model list before it can load model histories.
+  await Promise.all([loadSettings(), overviewTask.now()]);
+  liveTask.intervalMs = pollIntervalMs;
   updateSubtitle(selectedModel === 'all' ? 'All model instances' : (overviewData.find(item => item.key === selectedModel)?.name || selectedModel));
-  refresh();
-  setInterval(refresh, pollIntervalMs);
-});
-setInterval(refresh24h, 30000);
-setInterval(refreshInfo, 10000);
-setInterval(refreshTokens, 15000);
-setInterval(refreshOverview, 10000);
+  viewTasks.forEach(task => task.now());
+})();
 </script>
 </body>
 </html>
