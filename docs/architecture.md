@@ -7,7 +7,7 @@ configuration, and model discovery.
 
 The dashboard is one Go binary. The same binary runs as a **node agent** (it
 has local models) or as a **fleet collector** (it has `peers`). A process can
-have both, but the usual fleet layout gives the collector no local models.
+have both. Usually, the collector has no local models.
 
 ## Contents
 
@@ -37,7 +37,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-d
 | Component | Package | Main identifiers | Purpose |
 | --- | --- | --- | --- |
 | Entry point | `cmd/vllm-dashboard` | `main` | Loads the configuration, runs the first model discovery, reads the vLLM and kernel versions, starts the GPU sampler, the poller, and the peer resolver, registers the handlers on one `http.ServeMux`, and serves HTTP. |
-| Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `CompleteModel`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. The file is optional. Unknown fields are rejected. Obsolete fields are ignored and logged. Applies the `VLLM_DASHBOARD_*` environment variables. Fills empty fields from the host name, the URLs, and the ports. |
+| Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `CompleteModel`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. The file is optional. It rejects unknown fields. It logs and ignores obsolete fields. Applies the `VLLM_DASHBOARD_*` environment variables. Fills empty fields from the host name, the URLs, and the ports. |
 | Model discovery | `internal/discovery` | `Scan`, `Probe`, `Discover`, `Merge`, `NameModels`, `Tracker` | Finds vLLM and TensorFold server processes in `/proc`, reads their flags and systemd unit, and checks their `/metrics` endpoint. `Tracker` keeps a stopped model for a grace time and then removes it. |
 | Data types | `internal/sample` | `Sample`, `TokenUsage`, `ModelOverview`, `ServerInfo` | JSON types of the HTTP API. |
 | Local state | `internal/store` | `Store`, `ModelState`, `New`, `Update`, `Append`, `Samples`, `Snapshot`, `HistorySize`, `OnlineWindow`, `AppendLongSample`, `AggregateSampleSets`, `HistoryWindow`, `LongInterval`, `LongSize` | Holds the state and history of each local model and the latest host sample. One `sync.RWMutex` in `Store` protects them. Builds the minute rollup and calculates token usage windows. |
@@ -53,8 +53,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-d
 | UI | `internal/web` | `Handler` | Embeds `internal/web/static/index.html` with `go:embed` and serves it at `/`. The page polls the JSON API. |
 
 The graph shows the imports between the packages. There are no import
-cycles. `internal/sample` and `internal/config` are imported by most
-packages; those edges are left out.
+cycles. Most packages import `internal/sample` and `internal/config`. The
+graph does not show these imports.
 
 ```mermaid
 flowchart TB
@@ -165,7 +165,7 @@ flowchart TB
 
 The poller runs discovery every 30 seconds:
 
-- A new server is added to the store.
+- The poller adds a new server to the store.
 - A configured model keeps the values that the file sets. Discovery fills
   only the values that the file does not set, for example the unit.
 - After the first discovery, the keys of known models do not change.
@@ -441,8 +441,8 @@ TensorFold exporters are also supported:
   `tensorfold:` series to the `vllm:` names above. The generation total is
   `tensorfold:generation_tokens_total` plus
   `tensorfold:generation_tokens_running`. These two series and
-  `tensorfold:prompt_tokens_total` are required. The prefix-cache hit rate is
-  not available.
+  `tensorfold:prompt_tokens_total` are necessary. The prefix-cache hit rate
+  is not available.
 
 A scrape fails when the response has no finite `vllm:` series and is not a
 valid native TensorFold response.
@@ -570,7 +570,7 @@ Labels: `node`, `node_key`, `model`, `model_key`.
 | `vllm_dashboard_model_preemptions_total` | counter | Engine preemptions; resets when the engine restarts |
 
 When `model_up` is 0, only `model_up` and the two timestamp metrics are
-present for that model. The other model series are left out; they are not set
+present for that model. The other model series are not present. They are not set
 to zero. The latency gauges are averages, not histograms or percentiles. For
 percentiles, scrape vLLM `/metrics` directly.
 

@@ -1,467 +1,168 @@
 # vLLM Fleet Dashboard
 
-A lightweight dashboard for monitoring one or more
-[vLLM](https://github.com/vllm-project/vllm) servers. It combines live model
-metrics with GPU, CPU, memory, power, temperature, network, process, and systemd
-service information in a single embedded web interface.
+vLLM Fleet Dashboard shows live metrics of [vLLM](https://github.com/vllm-project/vllm)
+and TensorFold servers. It also shows GPU, CPU, memory, and network data of
+the host. One Go binary monitors one node or a fleet of nodes.
 
-The dashboard has no runtime package dependencies: build one Go binary, provide
-a JSON configuration file, and run it on each compute node or as a fleet
-collector. A container image is also available; see [Docker](#docker).
+![Dashboard with one node and one model](docs/images/single-node-dashboard.png)
 
 ## Features
 
-- Multiple compute nodes and models in one fleet overview
-- Globally scoped `node/model` identifiers
-- Live charts with a configurable poll interval (default one second) and one-minute 24-hour in-memory history
-- Throughput, latency, request, KV-cache, prefix-cache, and speculative-decoding metrics
-- GPU utilization, temperature, power, and core clock from `nvidia-smi` or `amd-smi`
-- Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
-- vLLM command-line and systemd service metadata
-- Peer aggregation with graceful handling of unavailable nodes
-- Optional JSON configuration. Local vLLM and TensorFold servers are found in `/proc`. There is no network scan.
-- Responsive, dependency-free UI embedded in the binary
+- Live charts for throughput, latency, requests, KV cache, prefix cache, and
+  speculative decoding.
+- GPU data from `nvidia-smi` or `amd-smi`.
+- Host data from `/proc` and sysfs.
+- Automatic discovery of local vLLM and TensorFold servers.
+- Fleet view of many nodes and models.
+- Prometheus `/metrics` endpoint and a Grafana dashboard.
+- 24 hours of history in memory.
+- One binary with an embedded web UI.
 
 ## Requirements
 
-- Linux on monitored compute nodes
-- Go 1.26 or newer to build
-- A vLLM or TensorFold server exposing its Prometheus-compatible `/metrics` endpoint
-- `nvidia-smi` or `amd-smi` (ROCm 6.x or 7.x) for GPU metrics
-- `systemctl` for optional service metadata
+- Linux on the compute nodes.
+- A vLLM or TensorFold server with its `/metrics` endpoint.
+- `nvidia-smi` or `amd-smi` for GPU data.
 
-The fleet collector can run without vLLM or a GPU. It then has no local
-models.
+## Quick start
 
-TensorFold's Python exporter (vLLM-compatible metrics plus live `/health`
-counters) and native exporter (TensorFold-only metrics) are supported.
-Native generation totals include both finished and in-flight tokens, without
-requiring Python-specific health fields. Native request counts, queue gauges,
-latency summaries, KV usage and speculative-token counters are normalized for
-the existing charts. Missing or invalid required token counters remain scrape
-errors rather than marking an unsupported exporter online. Native prompt totals
-update when requests finish; prefix-cache statistics are not synthesized.
+Start the dashboard on a node that runs vLLM. You do not need a configuration
+file. The dashboard finds the local vLLM servers. It uses the host name as the
+node name. Then open `http://localhost:9090`.
 
-## Architecture
+### Debian and Ubuntu (APT)
 
-```mermaid
-flowchart LR
-  vllm["vLLM /metrics"] --> agent["Node agent<br/>(vllm-dashboard)"]
-  host["GPU tools, /proc, sysfs"] --> agent
-  agent -- "JSON API" --> collector["Fleet collector<br/>(vllm-dashboard, optional)"]
-  collector --> browser["Browser UI"]
-  agent -. "single node" .-> browser
-  collector -- "/metrics" --> prometheus["Prometheus"] --> grafana["Grafana"]
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://awlx.github.io/vllm-dashboard/vllm-dashboard.gpg.key \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/vllm-dashboard.gpg
+echo "deb [signed-by=/etc/apt/keyrings/vllm-dashboard.gpg] https://awlx.github.io/vllm-dashboard stable main" \
+  | sudo tee /etc/apt/sources.list.d/vllm-dashboard.list
+sudo apt update
+sudo apt install vllm-dashboard
+echo '{}' | sudo tee /etc/vllm-dashboard/dashboard.json
+sudo systemctl restart vllm-dashboard
 ```
 
-Each process polls its local vLLM servers and host every second (`poll_interval`) and keeps
-the data in memory. A fleet collector calls the agents' APIs on request. See
-[docs/architecture.md](docs/architecture.md) for detailed diagrams, the poll
-cycle, data retention, the HTTP API, and the full `/metrics` reference.
+The service starts only when `/etc/vllm-dashboard/dashboard.json` exists. An
+empty JSON object (`{}`) selects all defaults.
 
-## Deployment Modes
+### Docker
 
-### Single Node
-
-Use one dashboard process when all vLLM servers run on the same machine. That
-process scrapes every locally configured model and serves both the web UI and
-JSON API. No collector or peer configuration is needed.
-
-```text
-Browser -> Dashboard -> vLLM /metrics
-              -> nvidia-smi or amd-smi, /proc, systemd
+```sh
+docker run -d --name vllm-dashboard --read-only --cap-drop ALL \
+  --gpus all --pid host --network host \
+  ghcr.io/awlx/vllm-dashboard:latest
 ```
 
-One node can monitor multiple local vLLM servers. Add one entry to `node.models`
-for each metrics endpoint, such as ports 8000 and 8001.
+See [Containers](#containers) for the flags.
 
-![Single-node dashboard showing one Qwen model](docs/images/single-node-dashboard.png)
+### Binary
 
-_Single-node view with sample data._
+Build the binary as shown in [Build from source](#build-from-source). Then
+start it:
 
-### Multiple Nodes
-
-Use an agent-and-collector layout when vLLM servers run on different machines:
-
-1. Run one dashboard process on each compute node with its local models in
-  `node.models`. These processes are the node agents.
-2. Run one additional dashboard process as the fleet collector. Give it an
-  empty `node.models` list and add every node agent under `peers`.
-3. Open only the collector UI. It combines peer data and forwards
-  model-specific API requests to the correct node.
-
-```text
-                 +-> Node A agent -> local vLLM server(s)
-Browser -> Fleet collector
-                 +-> Node B agent -> local vLLM server(s)
+```sh
+./vllm-dashboard
 ```
 
-Node agents do not push data. The collector polls their HTTP APIs, so it must be
-able to reach each configured peer URL. Keep node-agent endpoints on a trusted
-network; expose only the collector through an authenticated reverse proxy.
+## Fleet mode
 
-![Multi-node dashboard showing Qwen and DeepSeek models across two nodes](docs/images/multi-node-dashboard.png)
+1. Start the dashboard on each compute node.
+2. Start one more dashboard as the fleet collector.
+3. Give the collector the URLs of the nodes.
+4. Open only the collector UI.
 
-_Fleet view with sample data._
+```json
+{
+  "node": { "discover": false },
+  "peers": ["http://192.0.2.10:9090", "http://192.0.2.11:9090"]
+}
+```
 
-## Quick Start
+You can also set `VLLM_DASHBOARD_PEERS=http://192.0.2.10:9090,http://192.0.2.11:9090`.
+Each node gives its name to the collector. The collector gets the data from
+the nodes when you open a page. The nodes do not send data.
 
-Build the same binary for either deployment mode:
+![Fleet view with two nodes](docs/images/multi-node-dashboard.png)
+
+The dashboard has no authentication. Keep the nodes on a trusted network. Put
+the collector behind a reverse proxy with TLS and authentication.
+
+## Configuration
+
+The configuration file is optional. Set its path in `VLLM_DASHBOARD_CONFIG`.
+If the file does not exist, the dashboard uses the defaults. Environment
+variables override the file.
+
+| Key | Default | Auto-detected | Environment variable |
+| --- | --- | --- | --- |
+| `listen` | `:9090` | No | `VLLM_DASHBOARD_LISTEN` |
+| `poll_interval` | `1s` (`500ms` to `10s`) | No | `VLLM_DASHBOARD_POLL_INTERVAL` |
+| `node.key`, `node.name` | Short host name | Yes | `VLLM_DASHBOARD_HOSTNAME` |
+| `node.hostname` | Full host name | Yes | `VLLM_DASHBOARD_HOSTNAME` |
+| `node.discover` | `true` | No | `VLLM_DASHBOARD_DISCOVER` |
+| `node.models` | Discovered servers | Yes | None |
+| `peers` | None | No | `VLLM_DASHBOARD_PEERS` |
+
+Add a model to `node.models` only if discovery cannot find it. A model needs
+`port` or `metrics_url`. See [config.node.example.json](config.node.example.json)
+and [config.example.json](config.example.json).
+
+Use the same `poll_interval` on all nodes and on the collector. Old
+configuration files still load. The dashboard ignores obsolete keys and logs
+them.
+
+See [Configuration and discovery](docs/architecture.md#configuration-and-discovery)
+for all keys and the discovery rules.
+
+## Prometheus and Grafana
+
+`GET /metrics` gives Prometheus metrics for the local node and all peers. All
+names start with `vllm_dashboard_`. In fleet mode, scrape only the collector.
+
+Import [docs/grafana-dashboard.json](docs/grafana-dashboard.json) into Grafana.
+Then select your Prometheus data source.
+
+See [Prometheus `/metrics`](docs/architecture.md#prometheus-metrics) for all
+metrics, labels, scrape layouts, and example queries.
+
+## Containers
+
+The image is `ghcr.io/awlx/vllm-dashboard`. It runs on `linux/amd64` and
+`linux/arm64`. A node in a container needs these flags:
+
+| Flag | Reason |
+| --- | --- |
+| `--gpus all` | GPU data. Needs the NVIDIA Container Toolkit. |
+| `--pid host` | Discovery and vLLM process data. |
+| `--network host` | Host network data and access to vLLM on `127.0.0.1`. |
+
+These flags decrease the isolation of the container. Use them only on trusted
+nodes. A collector does not need them. In a container, systemd service data
+and the vLLM version are not available.
+
+[docker-compose.example.yml](docker-compose.example.yml) has a collector and a
+node service. See [docs/deployment.md](docs/deployment.md) for image tags, the
+APT package, systemd, and security.
+
+## Build from source
+
+You need Go 1.26 or later.
 
 ```sh
 git clone https://github.com/awlx/vllm-dashboard.git
 cd vllm-dashboard
 go test ./...
+go vet ./...
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-dashboard
 ```
 
-### Single-Node Quick Start
+To build the container image, run `docker build -t vllm-dashboard .`.
 
-Start the dashboard. It needs no configuration file. It finds the local vLLM
-and TensorFold servers in `/proc`:
-
-```sh
-./vllm-dashboard
-```
-
-Open `http://<node-address>:9090`. If you run the browser on the same machine,
-use `http://localhost:9090`.
-
-### Multi-Node Quick Start
-
-On each compute node, copy the binary and start it. The node key and name
-come from the host name:
-
-```sh
-./vllm-dashboard
-```
-
-Verify each agent from the collector machine before continuing:
-
-```sh
-curl http://<node-a-address>:9090/api/overview
-curl http://<node-b-address>:9090/api/overview
-```
-
-On the collector machine, configure the reachable agent URLs and start another
-copy of the same binary:
-
-```sh
-VLLM_DASHBOARD_PEERS=http://<node-a-address>:9090,http://<node-b-address>:9090 ./vllm-dashboard
-```
-
-You can also put the peer URLs in a file, see
-[`config.example.json`](config.example.json).
-
-Open `http://localhost:9090` on the collector machine, or use the collector's
-reverse-proxied URL. You do not need to open the individual node dashboards.
-
-## Configuration
-
-The configuration file is optional. Set its path in `VLLM_DASHBOARD_CONFIG`.
-If the variable is not set or the file does not exist, the dashboard uses the
-defaults. Unknown JSON fields are rejected so misspelled settings do not
-silently pass. Obsolete fields of old files are ignored and logged.
-
-| Setting | Default | Environment variable |
-| --- | --- | --- |
-| `listen` | `:9090` | `VLLM_DASHBOARD_LISTEN` |
-| `poll_interval` | `1s` | `VLLM_DASHBOARD_POLL_INTERVAL` |
-| `node.key`, `node.name` | Short host name | `VLLM_DASHBOARD_HOSTNAME` |
-| `node.hostname` | Full host name, if it is a DNS name | `VLLM_DASHBOARD_HOSTNAME` |
-| `node.discover` | `true` | `VLLM_DASHBOARD_DISCOVER` |
-| `node.models` | Found in `/proc` | None |
-| `peers` | None | `VLLM_DASHBOARD_PEERS` (added to the file peers) |
-
-### Compute Node
-
-Run an instance beside the vLLM servers. It finds each `vllm serve`,
-`python -m vllm.entrypoints.openai.api_server`, and TensorFold server process,
-reads its port, and checks `http://127.0.0.1:<port>/metrics`. The model name
-comes from `--served-model-name` or `/v1/models`. The systemd unit comes from
-the cgroup of the process. The dashboard looks for new and stopped servers
-every 30 seconds. A stopped server shows as offline for 5 minutes and is then
-removed.
-
-Add a model to `node.models` only when discovery cannot find it, for example
-when the server runs in a container or on another port mapping. A model needs
-`port` or `metrics_url`. All other fields are optional. See
-[`config.node.example.json`](config.node.example.json):
-
-```json
-{
-  "node": {
-    "models": [
-      {
-        "port": "8000",
-        "unit": "vllm-model-a.service"
-      }
-    ]
-  }
-}
-```
-
-`key` values must be stable, unique lowercase identifiers. If you do not set
-them, the dashboard makes them from the model name or the port.
-
-### Poll Interval
-
-`poll_interval` sets how often the dashboard scrapes vLLM, the GPU tool, and
-host counters. Use a Go duration string from `500ms` to `10s`. The default is
-`1s`. The `VLLM_DASHBOARD_POLL_INTERVAL` environment variable overrides the
-file value.
-
-```json
-{
-  "listen": "0.0.0.0:9090",
-  "poll_interval": "2s",
-  "node": { "key": "node-a", "hostname": "node-a.example.net" }
-}
-```
-
-- The live charts always show five minutes. The number of samples follows
-  the interval: 300 at `1s`, 150 at `2s`, 600 at `500ms`.
-- The 24-hour charts keep one point per minute. Each point is the average of
-  all polls in that minute. Latency and speculative-decoding points use only
-  polls that had activity. Counters use the last poll of the minute.
-- The browser reads the interval from `GET /api/settings` and refreshes at
-  the same rate. It sends a new request only after the previous response
-  arrives. It stops refreshing while the browser tab is hidden. The 24-hour
-  charts refresh once per minute.
-- Use the same interval on all agents and the collector. Fleet charts combine
-  node series sample by sample.
-- A short interval increases the load on the vLLM `/metrics` endpoint and on
-  the GPU tool. If a poll takes longer than the interval, the next poll starts
-  when the previous poll ends. Polls never overlap.
-- The GPU tool runs in a separate background loop. A poll uses the last GPU
-  reading, so a slow `nvidia-smi` or `amd-smi` call does not delay the other
-  metrics. If the GPU tool is slower than the interval, the loop waits as long
-  as the last call took. A GPU reading older than `max(5 x interval, 10s)` is
-  shown as zero.
-- Models are scraped in parallel. Process and service details (`pgrep`, `ps`,
-  `systemctl`) are cached for up to 30 seconds and are read again when a model
-  comes back online.
-
-The dashboard finds out if a unit belongs to the system manager or to a user
-manager (`systemctl --user`). The dashboard process must have permission to
-inspect the service and process metadata.
-
-### Fleet Collector
-
-Run another instance with the URL of each compute-node agent in `peers`. A
-peer entry is a URL string. The collector reads the key and the name of each
-peer from the `GET /api/node` response of that peer. Start with [`config.example.json`](config.example.json).
-The example uses the documentation-only `192.0.2.0/24` network.
-
-The collector forwards model-specific requests to the owning peer and combines
-each peer's `all` series for fleet totals. Unavailable peers are omitted from
-combined responses rather than taking down the dashboard.
-
-## Docker
-
-Multi-architecture images (`linux/amd64`, `linux/arm64`) are published to the
-GitHub Container Registry:
-
-```sh
-docker pull ghcr.io/awlx/vllm-dashboard:latest
-```
-
-| Tag | Source |
-| --- | --- |
-| `X.Y.Z`, `X.Y` | Release tag `vX.Y.Z` |
-| `latest` | Most recent release tag |
-| `main`, `sha-<short>` | Latest commit on `main` (unreleased) |
-
-Pin `X.Y.Z` for reproducible deployments. The image runs as an unprivileged
-user (UID 65532) and reads its configuration from
-`/etc/vllm-dashboard/dashboard.json`. Set `listen` to `0.0.0.0:9090` in that
-file; a loopback address is not reachable from outside the container.
-
-### Fleet Collector Container
-
-The image is primarily intended for the fleet collector, which only polls peer
-HTTP APIs:
-
-```sh
-cp config.example.json dashboard.json
-# Set "listen" to "0.0.0.0:9090" and point "peers" at your node agents.
-docker run -d --name vllm-dashboard --read-only --cap-drop ALL \
-  -p 127.0.0.1:9090:9090 \
-  -v "$PWD/dashboard.json:/etc/vllm-dashboard/dashboard.json:ro" \
-  ghcr.io/awlx/vllm-dashboard:latest
-```
-
-[`docker-compose.example.yml`](docker-compose.example.yml) contains the same
-setup for Docker Compose:
-
-```sh
-docker compose -f docker-compose.example.yml up -d
-```
-
-Host telemetry shown for the collector itself describes the container's view of
-the host and is not normally relevant.
-
-### Node Agent Container
-
-Running a node agent in a container works, but with limitations. For complete
-metadata, prefer the binary with the systemd unit on compute nodes.
-
-- **GPU metrics** need the
-  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
-  and `--gpus all`; the toolkit injects `nvidia-smi` into the container.
-- **Model discovery** and **vLLM process metadata** (command line, uptime)
-  require `--pid host` so `ps` and `/proc/<pid>` can see the vLLM processes.
-- **Network counters** come from `/proc/net/dev` and only reflect host
-  interfaces with `--network host`. Host networking also lets `metrics_url`
-  values such as `http://127.0.0.1:8000/metrics` reach vLLM.
-- **systemd service metadata is unavailable**: `systemctl` is not in the image
-  and cannot query the host's systemd. Omit `unit` or expect empty service data.
-- **vLLM version** detection runs `vllm --version`, which is not in the image.
-
-```sh
-docker run -d --name vllm-dashboard-agent --read-only --cap-drop ALL \
-  --gpus all --pid host --network host \
-  -e VLLM_DASHBOARD_LISTEN=0.0.0.0:9090 \
-  ghcr.io/awlx/vllm-dashboard:latest
-```
-
-`--pid host` and `--network host` reduce container isolation. Use them only on
-trusted compute nodes.
-
-### Building Locally
-
-```sh
-docker build -t vllm-dashboard .
-```
-
-The runtime image is based on `debian:bookworm-slim` rather than distroless
-because node mode needs `ps`/`pgrep` and the glibc-linked `nvidia-smi` injected
-by the NVIDIA Container Toolkit.
-
-## systemd
-
-The included [`vllm-dashboard.service`](vllm-dashboard.service) provides a
-hardened starting point:
-
-```sh
-sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin vllm-dashboard
-sudo install -m 0755 vllm-dashboard /usr/local/bin/vllm-dashboard
-sudo install -d -o vllm-dashboard -g vllm-dashboard /etc/vllm-dashboard
-# Optional: install a configuration file.
-sudo install -m 0640 -o vllm-dashboard -g vllm-dashboard \
-  dashboard.json /etc/vllm-dashboard/dashboard.json
-sudo install -m 0644 vllm-dashboard.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now vllm-dashboard
-```
-
-The account-creation command is suitable for distributions that provide
-`useradd`; adapt it and the unit for other systems as needed.
-
-## HTTP API
-
-The embedded UI uses these read-only JSON endpoints:
-
-- `GET /api/overview` - current status for all models
-- `GET /api/node` - key, name, and hostname of this node
-- `GET /api/metrics?model=<key>` - five-minute history
-- `GET /api/metrics/long?model=<key>` - 24-hour history
-- `GET /api/info?model=<key>` - model and service metadata
-- `GET /api/tokens?model=<key>` - one-hour and 24-hour token usage
-- `GET /api/settings` - poll interval and history windows of this process
-
-Use `model=all` for aggregate metrics. Fleet model keys use the
-`node/model` form. These endpoints send gzip-compressed responses when the
-client sends `Accept-Encoding: gzip`. A collector requests all peers in
-parallel. All peer requests of one API call share a four-second deadline.
-
-## Prometheus and Grafana
-
-`GET /metrics` exports Prometheus telemetry for the local node and configured
-peers. `GET /api/telemetry` is a local-only snapshot used by collectors; upgrade
-both collector and agents for fleet export. Existing JSON/UI endpoints are unchanged.
-Only GET and HEAD are accepted on the new routes. No additional listen port is needed.
-
-Metrics use the `vllm_dashboard_` prefix, stable `node_key` and `model_key` labels,
-and a `model` label containing the discovered served-model name (the same name
-resolution as the UI, falling back to the configured name/key). Names are cached
-during background polling and forwarded by agents; Prometheus requests do not
-run process discovery. The `node` label uses the configured short hostname or
-display name, matching the UI, with the config key as a fallback. A changed node
-or runtime model name intentionally starts new series.
-Units are seconds, bytes, hertz and ratios (0–1). Host metrics are emitted once per node,
-not per model. Token/request/preemption totals are engine counters that may reset.
-Latency gauges are poll-interval averages, not histograms or percentiles. This is
-not a raw vLLM metrics proxy and does not preserve engine histogram buckets/labels.
-
-`vllm_dashboard_node_up` reports telemetry transport availability. Models export
-`model_up=0` after a failed poll or 30 seconds without fresh data; stale/failed
-model performance series are omitted rather than replaced with zero. Unreachable
-peers emit `node_up=0` and no model series. Timestamp metrics permit freshness alerts.
-`vllm_dashboard_node_info{kernel_version=...}` (value 1) carries the running kernel
-release; nodes running an older agent omit it.
-Peer requests share a four-second deadline and do not recursively follow peers.
-Hardware collection failures inherit the existing dashboard's zero-value behavior;
-for example, a collector without a GPU reports zero GPU values, not sensor health.
-The dashboard uses `nvidia-smi` first. When it reports no values, the dashboard
-uses `amd-smi`. For both tools, utilization, temperature, and clock are averages
-over the GPUs that report a value, and power is the sum. Temperature uses the
-edge sensor, or the hotspot sensor when edge is not available (for example on
-MI300X). Each GPU tool call has a five-second timeout.
-
-Scrape the **collector only** for fleet totals to avoid counting the same agents
-twice. Example Prometheus configuration (replace the documentation address):
-
-```yaml
-scrape_configs:
-  - job_name: vllm-dashboard
-    scrape_interval: 15s
-    scrape_timeout: 10s
-    metrics_path: /metrics
-    static_configs:
-      - targets: ['192.0.2.10:9090']
-```
-
-Import [docs/grafana-dashboard.json](docs/grafana-dashboard.json) through Grafana
-**Dashboards → New → Import**, select your Prometheus datasource, then select the
-scrape job and one collector instance. The 18 panels cover availability, freshness,
-throughput, queueing, latency, KV/prefix/speculation, requests/preemptions, host
-telemetry and token usage. Node/model filters are multi-select. Counter rates need at least two
-Prometheus scrapes. Grafana does not scrape this HTTP endpoint itself: Prometheus
-(or a compatible service such as VictoriaMetrics) must collect it first.
-
-See [docs/architecture.md](docs/architecture.md#prometheus-metrics) for every
-metric name and label, scrape layouts for single-node and fleet setups, and
-example queries.
-
-## Data Retention
-
-History is held in bounded memory and resets when the process restarts. This is
-intentional: durable retention should live in Prometheus, VictoriaMetrics, or
-another time-series database rather than in the dashboard process.
-
-## Security
-
-The dashboard has no built-in authentication. Node agents and peer APIs should
-remain on a private management network. If users access a collector through a
-reverse proxy, terminate TLS and enforce authentication there.
-
-The model information endpoint can expose vLLM command-line parameters and
-service metadata. Review those values before granting access. Production
-configuration files can reveal network topology and are ignored by the supplied
-`.gitignore`; do not commit them.
-
-## Development
-
-```sh
-go test ./...
-go vet ./...
-gofmt -w .
-```
-
-The project deliberately uses only the Go standard library, the Prometheus Go
-client library for `/metrics`, and plain HTML, CSS, and JavaScript.
+See [docs/architecture.md](docs/architecture.md) for the code layout, the data
+flow, and the HTTP API.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE)
