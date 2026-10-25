@@ -42,6 +42,23 @@ the existing charts. Missing or invalid required token counters remain scrape
 errors rather than marking an unsupported exporter online. Native prompt totals
 update when requests finish; prefix-cache statistics are not synthesized.
 
+## Architecture
+
+```mermaid
+flowchart LR
+  vllm["vLLM /metrics"] --> agent["Node agent<br/>(vllm-dashboard)"]
+  host["GPU tools, /proc, sysfs"] --> agent
+  agent -- "JSON API" --> collector["Fleet collector<br/>(vllm-dashboard, optional)"]
+  collector --> browser["Browser UI"]
+  agent -. "single node" .-> browser
+  collector -- "/metrics" --> prometheus["Prometheus"] --> grafana["Grafana"]
+```
+
+Each process polls its local vLLM servers and host every second (`poll_interval`) and keeps
+the data in memory. A fleet collector calls the agents' APIs on request. See
+[docs/architecture.md](docs/architecture.md) for detailed diagrams, the poll
+cycle, data retention, the HTTP API, and the full `/metrics` reference.
+
 ## Deployment Modes
 
 ### Single Node
@@ -396,6 +413,10 @@ telemetry and token usage. Node/model filters are multi-select. Counter rates ne
 Prometheus scrapes. Grafana does not scrape this HTTP endpoint itself: Prometheus
 (or a compatible service such as VictoriaMetrics) must collect it first.
 
+See [docs/architecture.md](docs/architecture.md#prometheus-metrics) for every
+metric name and label, scrape layouts for single-node and fleet setups, and
+example queries.
+
 ## Data Retention
 
 History is held in bounded memory and resets when the process restarts. This is
@@ -421,8 +442,8 @@ go vet ./...
 gofmt -w main.go main_test.go
 ```
 
-The project deliberately uses only the Go standard library and plain HTML,
-CSS, and JavaScript.
+The project deliberately uses only the Go standard library, the Prometheus Go
+client library for `/metrics`, and plain HTML, CSS, and JavaScript.
 
 ## License
 
