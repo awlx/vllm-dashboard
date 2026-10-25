@@ -7,7 +7,7 @@ service information in a single embedded web interface.
 
 The dashboard has no runtime package dependencies: build one Go binary, provide
 a JSON configuration file, and run it on each compute node or as a fleet
-collector.
+collector. A container image is also available; see [Docker](#docker).
 
 ## Features
 
@@ -15,7 +15,7 @@ collector.
 - Globally scoped `node/model` identifiers
 - Two-second live charts and one-minute 24-hour in-memory history
 - Throughput, latency, request, KV-cache, prefix-cache, and speculative-decoding metrics
-- GPU utilization, temperature, power, and core clock from `nvidia-smi`
+- GPU utilization, temperature, power, and core clock from `nvidia-smi` or `amd-smi`
 - Host CPU utilization, average core clock, memory, and network telemetry from Linux `/proc` and sysfs
 - vLLM command-line and systemd service metadata
 - Peer aggregation with graceful handling of unavailable nodes
@@ -27,10 +27,10 @@ collector.
 - Linux on monitored compute nodes
 - Go 1.26 or newer to build
 - A vLLM or TensorFold server exposing its Prometheus-compatible `/metrics` endpoint
-- `nvidia-smi` for GPU metrics
+- `nvidia-smi` or `amd-smi` (ROCm 6.x or 7.x) for GPU metrics
 - `systemctl` for optional service metadata
 
-The fleet collector can run without vLLM or an NVIDIA GPU when its local
+The fleet collector can run without vLLM or a GPU when its local
 `models` list is empty.
 
 TensorFold's Python exporter (vLLM-compatible metrics plus live `/health`
@@ -52,7 +52,7 @@ JSON API. No collector or peer configuration is needed.
 
 ```text
 Browser -> Dashboard -> vLLM /metrics
-              -> nvidia-smi, /proc, systemd
+              -> nvidia-smi or amd-smi, /proc, systemd
 ```
 
 One node can monitor multiple local vLLM servers. Add one entry to `node.models`
@@ -186,6 +186,87 @@ The collector forwards model-specific requests to the owning peer and combines
 each peer's `all` series for fleet totals. Unavailable peers are omitted from
 combined responses rather than taking down the dashboard.
 
+## Docker
+
+Multi-architecture images (`linux/amd64`, `linux/arm64`) are published to the
+GitHub Container Registry:
+
+```sh
+docker pull ghcr.io/awlx/vllm-dashboard:latest
+```
+
+| Tag | Source |
+| --- | --- |
+| `X.Y.Z`, `X.Y` | Release tag `vX.Y.Z` |
+| `latest` | Most recent release tag |
+| `main`, `sha-<short>` | Latest commit on `main` (unreleased) |
+
+Pin `X.Y.Z` for reproducible deployments. The image runs as an unprivileged
+user (UID 65532) and reads its configuration from
+`/etc/vllm-dashboard/dashboard.json`. Set `listen` to `0.0.0.0:9090` in that
+file; a loopback address is not reachable from outside the container.
+
+### Fleet Collector Container
+
+The image is primarily intended for the fleet collector, which only polls peer
+HTTP APIs:
+
+```sh
+cp config.example.json dashboard.json
+# Set "listen" to "0.0.0.0:9090" and point "peers" at your node agents.
+docker run -d --name vllm-dashboard --read-only --cap-drop ALL \
+  -p 127.0.0.1:9090:9090 \
+  -v "$PWD/dashboard.json:/etc/vllm-dashboard/dashboard.json:ro" \
+  ghcr.io/awlx/vllm-dashboard:latest
+```
+
+[`docker-compose.example.yml`](docker-compose.example.yml) contains the same
+setup for Docker Compose:
+
+```sh
+docker compose -f docker-compose.example.yml up -d
+```
+
+Host telemetry shown for the collector itself describes the container's view of
+the host and is not normally relevant.
+
+### Node Agent Container
+
+Running a node agent in a container works, but with limitations. For complete
+metadata, prefer the binary with the systemd unit on compute nodes.
+
+- **GPU metrics** need the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
+  and `--gpus all`; the toolkit injects `nvidia-smi` into the container.
+- **vLLM process metadata** (command line, uptime) requires `--pid host` so
+  `pgrep`, `ps`, and `/proc/<pid>` can see the vLLM processes.
+- **Network counters** come from `/proc/net/dev` and only reflect host
+  interfaces with `--network host`. Host networking also lets `metrics_url`
+  values such as `http://127.0.0.1:8000/metrics` reach vLLM.
+- **systemd service metadata is unavailable**: `systemctl` is not in the image
+  and cannot query the host's systemd. Omit `unit` or expect empty service data.
+- **vLLM version** detection runs `vllm --version`, which is not in the image.
+
+```sh
+docker run -d --name vllm-dashboard-agent --read-only --cap-drop ALL \
+  --gpus all --pid host --network host \
+  -v "$PWD/dashboard.json:/etc/vllm-dashboard/dashboard.json:ro" \
+  ghcr.io/awlx/vllm-dashboard:latest
+```
+
+`--pid host` and `--network host` reduce container isolation. Use them only on
+trusted compute nodes.
+
+### Building Locally
+
+```sh
+docker build -t vllm-dashboard .
+```
+
+The runtime image is based on `debian:bookworm-slim` rather than distroless
+because node mode needs `ps`/`pgrep` and the glibc-linked `nvidia-smi` injected
+by the NVIDIA Container Toolkit.
+
 ## systemd
 
 The included [`vllm-dashboard.service`](vllm-dashboard.service) provides a
@@ -246,6 +327,11 @@ release; nodes running an older agent omit it.
 Peer requests share a four-second deadline and do not recursively follow peers.
 Hardware collection failures inherit the existing dashboard's zero-value behavior;
 for example, a collector without a GPU reports zero GPU values, not sensor health.
+The dashboard uses `nvidia-smi` first. When it reports no values, the dashboard
+uses `amd-smi`. For AMD GPUs, utilization, temperature, and clock are averages
+over the GPUs that report a value, and power is the sum. Temperature uses the
+edge sensor, or the hotspot sensor when edge is not available (for example on
+MI300X). Each GPU tool call has a five-second timeout.
 
 Scrape the **collector only** for fleet totals to avoid counting the same agents
 twice. Example Prometheus configuration (replace the documentation address):
