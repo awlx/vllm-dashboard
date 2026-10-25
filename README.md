@@ -200,6 +200,14 @@ file value.
 - A short interval increases the load on the vLLM `/metrics` endpoint and on
   the GPU tool. If a poll takes longer than the interval, the next poll starts
   when the previous poll ends. Polls never overlap.
+- The GPU tool runs in a separate background loop. A poll uses the last GPU
+  reading, so a slow `nvidia-smi` or `amd-smi` call does not delay the other
+  metrics. If the GPU tool is slower than the interval, the loop waits as long
+  as the last call took. A GPU reading older than `max(5 x interval, 10s)` is
+  shown as zero.
+- Models are scraped in parallel. Process and service details (`pgrep`, `ps`,
+  `systemctl`) are cached for up to 30 seconds and are read again when a model
+  comes back online.
 
 Set `user_unit` to `true` when the configured service is managed by
 `systemctl --user`. The dashboard process must have permission to inspect the
@@ -327,7 +335,9 @@ The embedded UI uses these read-only JSON endpoints:
 - `GET /api/settings` - poll interval and history windows of this process
 
 Use `model=all` for aggregate metrics. Fleet model keys use the
-`node/model` form.
+`node/model` form. These endpoints send gzip-compressed responses when the
+client sends `Accept-Encoding: gzip`. A collector requests all peers in
+parallel. All peer requests of one API call share a four-second deadline.
 
 ## Prometheus and Grafana
 
@@ -358,7 +368,7 @@ Peer requests share a four-second deadline and do not recursively follow peers.
 Hardware collection failures inherit the existing dashboard's zero-value behavior;
 for example, a collector without a GPU reports zero GPU values, not sensor health.
 The dashboard uses `nvidia-smi` first. When it reports no values, the dashboard
-uses `amd-smi`. For AMD GPUs, utilization, temperature, and clock are averages
+uses `amd-smi`. For both tools, utilization, temperature, and clock are averages
 over the GPUs that report a value, and power is the sum. Temperature uses the
 edge sensor, or the hotspot sensor when edge is not available (for example on
 MI300X). Each GPU tool call has a five-second timeout.

@@ -68,7 +68,7 @@ func fillHistory(state *ModelState, short, long int) {
 	}
 }
 
-func benchmarkRoute(b *testing.B, path string) {
+func benchmarkRoute(b *testing.B, path, encoding string) {
 	configureRuntime(DashboardConfig{Node: NodeConfig{Key: "node-a", Name: "Node A", Models: []ModelConfig{{Key: "model-a", Name: "A", MetricsURL: "http://127.0.0.1:1/metrics"}, {Key: "model-b", Name: "B", MetricsURL: "http://127.0.0.1:1/metrics"}}}})
 	for _, state := range modelStates {
 		fillHistory(state, historySize(), longSize)
@@ -78,7 +78,11 @@ func benchmarkRoute(b *testing.B, path string) {
 	var size int
 	for b.Loop() {
 		recorder := httptest.NewRecorder()
-		mux.ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+		request := httptest.NewRequest("GET", path, nil)
+		if encoding != "" {
+			request.Header.Set("Accept-Encoding", encoding)
+		}
+		mux.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusOK {
 			b.Fatalf("status %d", recorder.Code)
 		}
@@ -87,8 +91,14 @@ func benchmarkRoute(b *testing.B, path string) {
 	b.ReportMetric(float64(size), "bytes/resp")
 }
 
-func BenchmarkAPIMetricsShort(b *testing.B) { benchmarkRoute(b, "/api/metrics?model=all") }
-func BenchmarkAPIMetricsLong(b *testing.B) {
-	benchmarkRoute(b, "/api/metrics/long?model=node-a/model-a")
+func BenchmarkAPIMetricsShort(b *testing.B) { benchmarkRoute(b, "/api/metrics?model=all", "") }
+func BenchmarkAPIMetricsShortGzip(b *testing.B) {
+	benchmarkRoute(b, "/api/metrics?model=all", "gzip")
 }
-func BenchmarkAPITokens(b *testing.B) { benchmarkRoute(b, "/api/tokens?model=all") }
+func BenchmarkAPIMetricsLong(b *testing.B) {
+	benchmarkRoute(b, "/api/metrics/long?model=node-a/model-a", "")
+}
+func BenchmarkAPIMetricsLongGzip(b *testing.B) {
+	benchmarkRoute(b, "/api/metrics/long?model=node-a/model-a", "gzip")
+}
+func BenchmarkAPITokens(b *testing.B) { benchmarkRoute(b, "/api/tokens?model=all", "") }
