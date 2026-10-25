@@ -321,6 +321,7 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 	}
 
 	metrics := map[string]float64{}
+	tensorfoldMetrics := map[string]float64{}
 	tensorfold := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -334,10 +335,11 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 			continue
 		}
 		name := m[1]
+		target := metrics
 		if strings.HasPrefix(name, "tensorfold:") {
 			tensorfold = true
-		}
-		if !strings.HasPrefix(name, "vllm:") {
+			target = tensorfoldMetrics
+		} else if !strings.HasPrefix(name, "vllm:") {
 			continue
 		}
 		val, err := strconv.ParseFloat(m[3], 64)
@@ -345,16 +347,19 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 			continue
 		}
 		// sum across label variants (e.g. request_success_total has one line per finished_reason)
-		total := metrics[name] + val
+		total := target[name] + val
 		if math.IsInf(total, 0) {
 			return nil, fmt.Errorf("metrics value overflow")
 		}
-		metrics[name] = total
+		target[name] = total
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
 	if len(metrics) == 0 {
+		if tensorfold {
+			return normalizeTensorFoldMetrics(tensorfoldMetrics)
+		}
 		return nil, fmt.Errorf("no finite vllm metrics found")
 	}
 	if tensorfold {
@@ -370,6 +375,42 @@ func scrapeVLLM(metricsURL string) (map[string]float64, error) {
 			metrics["vllm:prefix_cache_hits_total"] = math.Min(health.cached, health.prompt)
 		}
 	}
+	return metrics, nil
+}
+
+func normalizeTensorFoldMetrics(raw map[string]float64) (map[string]float64, error) {
+	for _, name := range []string{"prompt_tokens_total", "generation_tokens_total", "generation_tokens_running"} {
+		value, ok := raw["tensorfold:"+name]
+		if !ok || value < 0 {
+			return nil, fmt.Errorf("missing or invalid native TensorFold metric %s", name)
+		}
+	}
+	metrics := map[string]float64{}
+	for target, source := range map[string]string{
+		"prompt_tokens_total":                   "prompt_tokens_total",
+		"num_requests_running":                  "num_requests_running",
+		"num_requests_waiting":                  "num_requests_waiting",
+		"kv_cache_usage_perc":                   "kv_cache_usage_perc",
+		"spec_decode_num_draft_tokens_total":    "spec_decode_num_draft_tokens_total",
+		"spec_decode_num_accepted_tokens_total": "spec_decode_num_accepted_tokens_total",
+		"e2e_request_latency_seconds_sum":       "e2e_request_latency_seconds_sum",
+		"e2e_request_latency_seconds_count":     "e2e_request_latency_seconds_count",
+		"request_success_total":                 "e2e_request_latency_seconds_count",
+		"time_to_first_token_seconds_sum":       "time_to_first_token_seconds_sum",
+		"time_to_first_token_seconds_count":     "time_to_first_token_seconds_count",
+		"inter_token_latency_seconds_sum":       "request_time_per_output_token_seconds_sum",
+		"inter_token_latency_seconds_count":     "request_time_per_output_token_seconds_count",
+		"num_preemptions_total":                 "preemptions_total",
+	} {
+		if value, ok := raw["tensorfold:"+source]; ok {
+			metrics["vllm:"+target] = value
+		}
+	}
+	total := raw["tensorfold:generation_tokens_total"] + raw["tensorfold:generation_tokens_running"]
+	if math.IsInf(total, 0) {
+		return nil, fmt.Errorf("native TensorFold generation counter overflow")
+	}
+	metrics["vllm:generation_tokens_total"] = total
 	return metrics, nil
 }
 

@@ -26,12 +26,21 @@ collector.
 
 - Linux on monitored compute nodes
 - Go 1.26 or newer to build
-- A vLLM server exposing its Prometheus-compatible `/metrics` endpoint
+- A vLLM or TensorFold server exposing its Prometheus-compatible `/metrics` endpoint
 - `nvidia-smi` for GPU metrics
 - `systemctl` for optional service metadata
 
 The fleet collector can run without vLLM or an NVIDIA GPU when its local
 `models` list is empty.
+
+TensorFold's Python exporter (vLLM-compatible metrics plus live `/health`
+counters) and native exporter (TensorFold-only metrics) are supported.
+Native generation totals include both finished and in-flight tokens, without
+requiring Python-specific health fields. Native request counts, queue gauges,
+latency summaries, KV usage and speculative-token counters are normalized for
+the existing charts. Missing or invalid required token counters remain scrape
+errors rather than marking an unsupported exporter online. Native prompt totals
+update when requests finish; prefix-cache statistics are not synthesized.
 
 ## Deployment Modes
 
