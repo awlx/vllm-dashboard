@@ -4,12 +4,12 @@ FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY *.go ./
-COPY static ./static
+COPY cmd ./cmd
+COPY internal ./internal
 ARG TARGETOS
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/vllm-dashboard .
+    go build -trimpath -ldflags="-s -w" -o /out/vllm-dashboard ./cmd/vllm-dashboard
 
 # Debian slim instead of distroless: node mode runs ps and pgrep (procps), and
 # the NVIDIA Container Toolkit injects a glibc-linked nvidia-smi into the
