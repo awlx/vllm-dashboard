@@ -89,7 +89,7 @@ func TestMetricsRoutesAndPeers(t *testing.T) {
 	defer bad.Close()
 	cfg := config.Config{Node: config.Node{Key: "collector", Name: "Fleet Collector"}, Peers: []config.Peer{{Key: "remote", Hostname: "spark-one.example.test", URL: peer.URL}, {Key: "failed", Name: "Offline node", URL: bad.URL}}}
 	mux := http.NewServeMux()
-	Register(mux, cfg, store.New(cfg))
+	Register(mux, cfg, store.New(cfg), func() []config.Peer { return cfg.Peers })
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
 	if response.Code != 200 {

@@ -12,6 +12,7 @@ import (
 	"github.com/awlx/vllm-dashboard/internal/collect/process"
 	"github.com/awlx/vllm-dashboard/internal/collect/vllm"
 	"github.com/awlx/vllm-dashboard/internal/config"
+	"github.com/awlx/vllm-dashboard/internal/discovery"
 	"github.com/awlx/vllm-dashboard/internal/sample"
 	"github.com/awlx/vllm-dashboard/internal/store"
 )
@@ -24,12 +25,28 @@ type Poller struct {
 	lastCPUTotal, lastCPUIdle float64
 	lastNetRx, lastNetTx      float64
 	lastSystemScrape          time.Time
+
+	discover     func() []config.Model
+	tracker      *discovery.Tracker
+	lastDiscover time.Time
 }
 
-// New returns a poller that writes to st. It reads GPU values from the
-// gpus sampler and process data from the procs cache.
-func New(st *store.Store, gpus *gpu.Sampler, procs *process.Cache) *Poller {
-	return &Poller{store: st, gpus: gpus, procs: procs}
+const (
+	// DiscoverEvery is the time between two model discovery runs.
+	DiscoverEvery = 30 * time.Second
+	// DiscoverGrace is the time that a stopped discovered model stays in
+	// the list. The UI shows it as offline during this time.
+	DiscoverGrace = 5 * time.Minute
+)
+
+// New returns a poller that writes to st. If discover is not nil, the
+// poller calls it every DiscoverEvery. It adds new models to st and
+// removes discovered models that stopped more than DiscoverGrace ago.
+//
+// The poller reads GPU values from the gpus sampler and process data from
+// the procs cache.
+func New(st *store.Store, gpus *gpu.Sampler, procs *process.Cache, discover func() []config.Model) *Poller {
+	return &Poller{store: st, gpus: gpus, procs: procs, discover: discover, tracker: discovery.NewTracker(DiscoverGrace), lastDiscover: time.Now()}
 }
 
 // Run polls on a fixed cadence. A ticker never runs polls in parallel:
@@ -38,8 +55,41 @@ func (p *Poller) Run() {
 	ticker := time.NewTicker(p.store.Interval())
 	defer ticker.Stop()
 	for {
+		if p.discover != nil && time.Since(p.lastDiscover) >= DiscoverEvery {
+			p.Discover()
+		}
 		p.Poll()
 		<-ticker.C
+	}
+}
+
+// Discover runs discovery once and updates the model list in the store.
+// The keys and names of known models do not change.
+func (p *Poller) Discover() {
+	now := time.Now()
+	p.lastDiscover = now
+	known := p.store.Models()
+	fixed := make([]config.Model, len(known))
+	for index, model := range known {
+		model.KeyAuto, model.NameAuto = false, false
+		fixed[index] = model
+	}
+	updated, removed := p.tracker.Update(fixed, p.discover(), now)
+	for _, model := range removed {
+		log.Printf("removed model %s at %s", model.Key, model.MetricsURL)
+		p.invalidate(model.Key)
+	}
+	for _, model := range p.store.SetModels(discovery.NameModels(updated, vllm.ServedModelName)) {
+		p.invalidate(model.Key)
+		startedAt := process.StartedAt(model)
+		p.store.Update(model.Key, func(state *store.ModelState) { state.CounterStartedAt = startedAt })
+		log.Printf("discovered model %s at %s", model.Key, model.MetricsURL)
+	}
+}
+
+func (p *Poller) invalidate(key string) {
+	if p.procs != nil {
+		p.procs.Invalidate(key)
 	}
 }
 

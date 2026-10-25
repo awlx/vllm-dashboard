@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awlx/vllm-dashboard/internal/config"
 	"github.com/awlx/vllm-dashboard/internal/sample"
 )
 
@@ -73,5 +74,23 @@ func TestUsageSeedsWindowWhenModelStartedInsideIt(t *testing.T) {
 	}
 	if usage.LastHour.TotalTokens != 0 {
 		t.Fatalf("1h tokens = %.0f, want 0", usage.LastHour.TotalTokens)
+	}
+}
+
+func TestSetModelsAddsAndRemovesState(t *testing.T) {
+	st := New(config.Config{Node: config.Node{Key: "node", Models: []config.Model{{Key: "a"}, {Key: "b"}}}})
+	added := st.SetModels([]config.Model{{Key: "b"}, {Key: "c"}})
+	if len(added) != 1 || added[0].Key != "c" {
+		t.Fatalf("added = %+v", added)
+	}
+	if _, ok := st.LocalModelKey("a"); ok {
+		t.Fatal("removed model a is still known")
+	}
+	if status := st.Status("a"); !status.LastScrape.IsZero() {
+		t.Fatalf("status of removed model = %+v", status)
+	}
+	st.Update("a", func(*ModelState) { t.Fatal("update of removed model ran") })
+	if _, ok := st.LocalModelKey("node/c"); !ok {
+		t.Fatal("added model c is not known")
 	}
 }

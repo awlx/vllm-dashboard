@@ -173,9 +173,9 @@ type telemetryNode struct {
 	snapshot TelemetrySnapshot
 }
 
-func collectTelemetry(ctx context.Context, cfg config.Config, st *store.Store) []telemetryNode {
+func collectTelemetry(ctx context.Context, cfg config.Config, peerList []config.Peer, st *store.Store) []telemetryNode {
 	local := telemetryNode{key: cfg.Node.Key, name: config.DisplayName(cfg.Node.Name, cfg.Node.Hostname), up: true, snapshot: localTelemetry(st)}
-	peers := append([]config.Peer(nil), cfg.Peers...)
+	peers := peerList
 
 	nodes := make([]telemetryNode, len(peers)+1)
 	nodes[0] = local
@@ -219,7 +219,8 @@ func telemetryGET(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // Register adds the /api/telemetry and /metrics handlers to mux.
-func Register(mux *http.ServeMux, cfg config.Config, st *store.Store) {
+// peers returns the current peer list. Keys and names can change at runtime.
+func Register(mux *http.ServeMux, cfg config.Config, st *store.Store, peers func() []config.Peer) {
 	mux.HandleFunc("/api/telemetry", func(w http.ResponseWriter, r *http.Request) {
 		if !telemetryGET(w, r) {
 			return
@@ -236,7 +237,7 @@ func Register(mux *http.ServeMux, cfg config.Config, st *store.Store) {
 		}
 		// An isolated registry and immutable request snapshot avoid cross-scrape
 		// state, stale peer labels, and default Go/process collector identifiers.
-		nodes := collectTelemetry(r.Context(), cfg, st)
+		nodes := collectTelemetry(r.Context(), cfg, peers(), st)
 		registry := prometheus.NewRegistry()
 		registry.MustRegister(&telemetryCollector{nodes: nodes, now: time.Now()})
 		if r.Method == http.MethodHead {

@@ -107,7 +107,7 @@ func (s *Store) samplesFor(key string, long bool) []sample.Sample {
 	if key == "all" {
 		return s.aggregateLocalSamples(long)
 	}
-	localKey, ok := s.LocalModelKey(key)
+	localKey, ok := s.localModelKey(key)
 	if !ok {
 		return nil
 	}
@@ -159,7 +159,11 @@ func usageForState(state *ModelState) sample.TokenUsage {
 
 func (s *Store) usageForKey(key string) sample.TokenUsage {
 	if key != "all" {
-		return usageForState(s.states[s.ModelConfig(key).Key])
+		state := s.states[s.modelConfig(key).Key]
+		if state == nil {
+			return sample.TokenUsage{}
+		}
+		return usageForState(state)
 	}
 	var total sample.TokenUsage
 	for _, model := range s.models {

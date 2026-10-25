@@ -33,11 +33,14 @@ type Fleet struct {
 	store  *store.Store
 	procs  *process.Cache
 	client *http.Client
+
+	mu    sync.RWMutex
+	peers []config.Peer
 }
 
 // New returns a fleet view for cfg, the local store, and the process cache.
 func New(cfg config.Config, st *store.Store, procs *process.Cache) *Fleet {
-	return &Fleet{cfg: cfg, store: st, procs: procs, client: &http.Client{Timeout: PeerTimeout}}
+	return &Fleet{cfg: cfg, store: st, procs: procs, client: &http.Client{Timeout: PeerTimeout}, peers: append([]config.Peer(nil), cfg.Peers...)}
 }
 
 // FanOut calls fn for each peer in parallel. All calls share one
@@ -66,9 +69,72 @@ func (f *Fleet) Store() *store.Store {
 	return f.store
 }
 
-// Peers returns the configured peers.
+// Peers returns the peers with their current keys and names.
 func (f *Fleet) Peers() []config.Peer {
-	return f.cfg.Peers
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return append([]config.Peer(nil), f.peers...)
+}
+
+// NodeInfo is the response of /api/node.
+type NodeInfo struct {
+	Key      string `json:"key"`
+	Name     string `json:"name,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
+}
+
+// ResolveEvery is the time between two reads of the peer identities.
+const ResolveEvery = 30 * time.Second
+
+// RunResolver calls ResolvePeers now and then every ResolveEvery.
+func (f *Fleet) RunResolver() {
+	for {
+		f.ResolvePeers()
+		time.Sleep(ResolveEvery)
+	}
+}
+
+// ResolvePeers reads /api/node of each peer and sets the key and the name
+// that the peer reports. A peer that does not answer, or that reports a
+// key that is in use, keeps its current values.
+func (f *Fleet) ResolvePeers() {
+	current := f.Peers()
+	reported := make([]NodeInfo, len(current))
+	FanOut(context.Background(), current, func(ctx context.Context, index int, peer config.Peer) {
+		var info NodeInfo
+		if err := f.PeerAPI(ctx, peer, "/api/node", "", &info); err != nil {
+			return
+		}
+		if config.KeyRe.MatchString(info.Key) && config.DisplayName(info.Name, info.Hostname) != "" && (info.Hostname == "" || config.ValidHostname(info.Hostname)) {
+			reported[index] = info
+		}
+	})
+
+	used := map[string]bool{f.cfg.Node.Key: true}
+	for index, info := range reported {
+		if info.Key == "" {
+			used[current[index].Key] = true
+		}
+	}
+	for index, info := range reported {
+		if info.Key == "" {
+			continue
+		}
+		peer := &current[index]
+		if info.Key != peer.Key && used[info.Key] {
+			log.Printf("peer %s reports key %q, which is in use; keeping %q", peer.URL, info.Key, peer.Key)
+			used[peer.Key] = true
+			continue
+		}
+		if info.Key != peer.Key {
+			log.Printf("peer %s is node %q", peer.URL, info.Key)
+		}
+		peer.Key, peer.Name, peer.Hostname = info.Key, info.Name, info.Hostname
+		used[peer.Key] = true
+	}
+	f.mu.Lock()
+	f.peers = current
+	f.mu.Unlock()
 }
 
 // PeerForModel splits a "<peer.key>/<model key>" key.
@@ -77,7 +143,7 @@ func (f *Fleet) PeerForModel(key string) (config.Peer, string, bool) {
 	if len(parts) != 2 {
 		return config.Peer{}, "", false
 	}
-	for _, peer := range f.cfg.Peers {
+	for _, peer := range f.Peers() {
 		if peer.Key == parts[0] {
 			return peer, parts[1], true
 		}
@@ -117,8 +183,9 @@ func (f *Fleet) combinedSamples(ctx context.Context, long bool) []sample.Sample 
 	if long {
 		path += "/long"
 	}
-	peerSamples := make([][]sample.Sample, len(f.cfg.Peers))
-	FanOut(ctx, f.cfg.Peers, func(ctx context.Context, index int, peer config.Peer) {
+	peers := f.Peers()
+	peerSamples := make([][]sample.Sample, len(peers))
+	FanOut(ctx, peers, func(ctx context.Context, index int, peer config.Peer) {
 		if err := f.PeerAPI(ctx, peer, path, "all", &peerSamples[index]); err != nil {
 			log.Printf("peer %s metrics: %v", peer.Key, err)
 			peerSamples[index] = nil
@@ -175,14 +242,15 @@ func (f *Fleet) LocalOverview() []sample.ModelOverview {
 // CombinedOverview returns the local items and the items of each peer.
 func (f *Fleet) CombinedOverview(ctx context.Context) []sample.ModelOverview {
 	overview := f.LocalOverview()
-	results := make([][]sample.ModelOverview, len(f.cfg.Peers))
-	FanOut(ctx, f.cfg.Peers, func(ctx context.Context, index int, peer config.Peer) {
+	peers := f.Peers()
+	results := make([][]sample.ModelOverview, len(peers))
+	FanOut(ctx, peers, func(ctx context.Context, index int, peer config.Peer) {
 		if err := f.PeerAPI(ctx, peer, "/api/overview", "", &results[index]); err != nil {
 			log.Printf("peer %s overview: %v", peer.Key, err)
 			results[index] = nil
 		}
 	})
-	for peerIndex, peer := range f.cfg.Peers {
+	for peerIndex, peer := range peers {
 		peerModels := results[peerIndex]
 		for index := range peerModels {
 			modelKey := peerModels[index].Key
@@ -191,7 +259,10 @@ func (f *Fleet) CombinedOverview(ctx context.Context) []sample.ModelOverview {
 			}
 			peerModels[index].Key = config.ScopedModelKey(peer.Key, modelKey)
 			peerModels[index].NodeKey = peer.Key
-			peerModels[index].NodeName = config.DisplayName(peer.Name, peer.Hostname)
+			// The peer reports its own node name. The URL host is the fallback.
+			if peerModels[index].NodeName == "" {
+				peerModels[index].NodeName = config.DisplayName(peer.Name, peer.Hostname)
+			}
 		}
 		overview = append(overview, peerModels...)
 	}

@@ -46,3 +46,52 @@ func TestCombinedOverviewScopesPeerModels(t *testing.T) {
 		t.Fatalf("unexpected overview: %+v", overview)
 	}
 }
+
+func TestResolvePeersUsesReportedIdentity(t *testing.T) {
+	reports := map[string]NodeInfo{}
+	handler := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/node":
+				info, ok := reports[name]
+				if !ok {
+					http.NotFound(w, r)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(info)
+			case "/api/overview":
+				_ = json.NewEncoder(w).Encode([]sample.ModelOverview{{Key: "m", Name: "M", NodeName: reports[name].Hostname}})
+			}
+		}
+	}
+	reports["b"] = NodeInfo{Key: "gpu-b", Hostname: "gpu-b.example.net"}
+	reports["c"] = NodeInfo{Key: "local", Name: "Clash"}
+	b, c, d := httptest.NewServer(handler("b")), httptest.NewServer(handler("c")), httptest.NewServer(handler("d"))
+	defer b.Close()
+	defer c.Close()
+	defer d.Close()
+
+	cfg := config.Config{
+		Node:  config.Node{Key: "local", Name: "Local"},
+		Peers: []config.Peer{{Key: "fallback-b", Name: "b", URL: b.URL}, {Key: "fallback-c", Name: "c", URL: c.URL}, {Key: "fallback-d", Name: "d", URL: d.URL}},
+	}
+	f := New(cfg, store.New(cfg), process.NewCache("", ""))
+	f.ResolvePeers()
+	peers := f.Peers()
+	if peers[0].Key != "gpu-b" || peers[0].Hostname != "gpu-b.example.net" || peers[0].Name != "" {
+		t.Errorf("resolved peer = %+v", peers[0])
+	}
+	if peers[1].Key != "fallback-c" {
+		t.Errorf("peer with a key in use = %+v", peers[1])
+	}
+	if peers[2].Key != "fallback-d" || peers[2].Name != "d" {
+		t.Errorf("peer without /api/node = %+v", peers[2])
+	}
+	if _, model, ok := f.PeerForModel("gpu-b/m"); !ok || model != "m" {
+		t.Errorf("PeerForModel(gpu-b/m) = %q, %v", model, ok)
+	}
+	overview := f.CombinedOverview(t.Context())
+	if len(overview) != 3 || overview[0].Key != "gpu-b/m" || overview[0].NodeName != "gpu-b.example.net" || overview[2].NodeName != "d" {
+		t.Errorf("overview = %+v", overview)
+	}
+}
