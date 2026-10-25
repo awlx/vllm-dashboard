@@ -82,3 +82,17 @@ func TestFlagValueAcceptsUnderscores(t *testing.T) {
 		t.Errorf("FlagValue = %q, want 8001", got)
 	}
 }
+
+func TestTrackerKeepsUntrackedModelForGracePeriod(t *testing.T) {
+	tracker := NewTracker(5 * time.Minute)
+	start := time.Unix(1000, 0)
+	model := config.Model{Key: "m", MetricsURL: "http://127.0.0.1:8000/metrics", Discovered: true, Identity: "m"}
+	models, removed := tracker.Update([]config.Model{model}, nil, start)
+	if len(models) != 1 || len(removed) != 0 {
+		t.Fatalf("first update: models = %+v, removed = %+v", models, removed)
+	}
+	models, removed = tracker.Update(models, nil, start.Add(6*time.Minute))
+	if len(models) != 0 || len(removed) != 1 {
+		t.Fatalf("after grace: models = %+v, removed = %+v", models, removed)
+	}
+}

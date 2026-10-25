@@ -34,6 +34,10 @@ func (t *Tracker) Update(known, found []config.Model, now time.Time) (models, re
 			kept = append(kept, model)
 			continue
 		}
+		if _, ok := t.lastSeen[model.MetricsURL]; !ok {
+			// A model from a scan before the tracker existed starts its grace period now.
+			t.lastSeen[model.MetricsURL] = now
+		}
 		current, running := byURL[model.MetricsURL]
 		switch {
 		case running && current.Identity == model.Identity:
