@@ -37,10 +37,10 @@ type Rollup struct {
 	activeCount [5]int
 }
 
-func averagedFields(s *sample.Sample) [16]*float64 {
-	return [16]*float64{&s.Running, &s.Waiting, &s.KVCachePct, &s.PromptTokPerSec, &s.GenTokPerSec, &s.ReqPerSec,
+func averagedFields(s *sample.Sample) [18]*float64 {
+	return [18]*float64{&s.Running, &s.Waiting, &s.KVCachePct, &s.PromptTokPerSec, &s.GenTokPerSec, &s.ReqPerSec,
 		&s.GPUUtilPct, &s.GPUTempC, &s.GPUPowerW, &s.GPUClockMHz, &s.CPUUtilPct, &s.CPUClockMHz,
-		&s.MemUsedPct, &s.MemUsedGB, &s.NetRxMbps, &s.NetTxMbps}
+		&s.MemUsedPct, &s.MemUsedGB, &s.NetRxMbps, &s.NetTxMbps, &s.PromptCacheGB, &s.PromptCacheStates}
 }
 
 func activeFields(s *sample.Sample) [5]*float64 {

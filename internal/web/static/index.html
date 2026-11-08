@@ -88,7 +88,7 @@
   }
   .model-card {
     display: grid;
-    grid-template-columns: minmax(150px, 1.4fr) repeat(4, minmax(80px, 1fr));
+    grid-template-columns: minmax(150px, 1.4fr) repeat(5, minmax(80px, 1fr));
     align-items: center;
     gap: 14px;
     border: 1px solid var(--panel-border);
@@ -350,6 +350,7 @@
     <div class="card"><div class="label">Avg Inter-token Latency</div><div class="value" id="itl">–<span class="unit">ms</span></div></div>
     <div class="card"><div class="label">Avg End-to-End Latency</div><div class="value" id="e2e_latency">–<span class="unit">ms</span></div></div>
     <div class="card"><div class="label">Prefix Cache Hit Rate</div><div class="value" id="prefix_hit">–<span class="unit">%</span></div></div>
+    <div class="card"><div class="label">Prompt Cache</div><div class="value" id="prompt_cache">–<span class="unit" id="prompt_cache_unit">GB</span></div></div>
     <div class="card"><div class="label">Spec-Decode Accept Rate</div><div class="value" id="spec_accept">–<span class="unit">%</span></div></div>
     <div class="card"><div class="label">Completed Requests</div><div class="value" id="completed">–</div></div>
     <div class="card"><div class="label">Preemptions</div><div class="value" id="preemptions">–</div></div>
@@ -1130,6 +1131,9 @@ async function refresh() {
     setValue('itl', last.inter_token_ms.toFixed(0));
     setValue('e2e_latency', last.e2e_latency_ms.toFixed(0));
     setValue('prefix_hit', last.prefix_cache_hit_pct.toFixed(1));
+    const promptCache = last.prompt_cache_states > 0 || last.prompt_cache_gb > 0;
+    setValue('prompt_cache', promptCache ? last.prompt_cache_gb.toFixed(2) : '–');
+    setText(document.getElementById('prompt_cache_unit'), promptCache ? `GB · ${last.prompt_cache_states.toFixed(0)} states` : 'GB');
     setValue('spec_accept', last.spec_accept_pct.toFixed(1));
     setText(document.getElementById('completed'), last.completed_requests.toFixed(0));
     setText(document.getElementById('preemptions'), last.preemptions_total.toFixed(0));
@@ -1278,6 +1282,7 @@ async function refreshOverview() {
           <div class="model-status"><span class="status-dot ${model.online ? 'online' : ''}"></span>${model.online ? 'Online' : 'Offline'} · ${esc(model.node_name)} · ${formatUptime(model.info.service_uptime_seconds)}</div>
         </div>
         <div class="model-stat"><div class="k">KV cache</div><div class="v">${(latest.kv_cache_pct || 0).toFixed(1)}%</div></div>
+        <div class="model-stat"><div class="k">Prefix hit</div><div class="v">${(latest.prefix_cache_hit_pct || 0).toFixed(1)}%</div></div>
         <div class="model-stat"><div class="k">Requests</div><div class="v">${(latest.running || 0).toFixed(0)} / ${(latest.waiting || 0).toFixed(0)}</div></div>
         <div class="model-stat"><div class="k">Throughput</div><div class="v">${((latest.prompt_tps || 0) + (latest.gen_tps || 0)).toFixed(0)} tok/s</div></div>
         <div class="model-stat"><div class="k">Tokens 24h</div><div class="v">${formatTokens(model.tokens.last_24h.total_tokens)}</div></div>

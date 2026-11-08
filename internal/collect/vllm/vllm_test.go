@@ -70,6 +70,12 @@ tensorfold:requests_running 2
 tensorfold:num_requests_running 2
 tensorfold:num_requests_waiting 1
 tensorfold:kv_cache_usage_perc{stream="0"} 0.25
+tensorfold:kv_cache_usage_perc{stream="1"} 0.75
+tensorfold:kv_cache_usage_perc{stream="2"} 0.5
+tensorfold:prefix_cache_queries_total 4000
+tensorfold:prefix_cache_hits_total 3200
+tensorfold:prompt_cache_bytes 2147483648
+tensorfold:prompt_cache_states 3
 tensorfold:spec_decode_num_draft_tokens_total 60
 tensorfold:spec_decode_num_accepted_tokens_total 42
 tensorfold:e2e_request_latency_seconds_sum 6
@@ -96,7 +102,11 @@ tensorfold:preemptions_total 1
 		"vllm:generation_tokens_total":               1030,
 		"vllm:num_requests_running":                  2,
 		"vllm:num_requests_waiting":                  1,
-		"vllm:kv_cache_usage_perc":                   0.25,
+		"vllm:kv_cache_usage_perc":                   0.75,
+		"vllm:prefix_cache_queries_total":            4000,
+		"vllm:prefix_cache_hits_total":               3200,
+		"tensorfold:prompt_cache_bytes":              2147483648,
+		"tensorfold:prompt_cache_states":             3,
 		"vllm:spec_decode_num_draft_tokens_total":    60,
 		"vllm:spec_decode_num_accepted_tokens_total": 42,
 		"vllm:e2e_request_latency_seconds_sum":       6,

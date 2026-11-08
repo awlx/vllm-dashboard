@@ -176,6 +176,8 @@ func recordScrape(state *store.ModelState, model config.Model, identity sample.S
 		if queries > 0 {
 			s.PrefixCacheHitPct = hits / queries * 100
 		}
+		s.PromptCacheGB = metrics["tensorfold:prompt_cache_bytes"] / (1 << 30)
+		s.PromptCacheStates = metrics["tensorfold:prompt_cache_states"]
 
 		promptTok := metrics["vllm:prompt_tokens_total"]
 		genTok := metrics["vllm:generation_tokens_total"]

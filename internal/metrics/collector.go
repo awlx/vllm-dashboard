@@ -53,6 +53,8 @@ var modelGauges = []sampleGauge{
 	modelGauge("itl_average_seconds", "Average inter-token latency over the last successful poll interval, not a histogram.", func(s sample.Sample) float64 { return s.InterTokenMs / 1000 }),
 	modelGauge("e2e_average_seconds", "Average end-to-end latency over the last successful poll interval, not a histogram.", func(s sample.Sample) float64 { return s.E2ELatencyMs / 1000 }),
 	modelGauge("prefix_cache_hit_ratio", "Cumulative prefix cache hit ratio.", func(s sample.Sample) float64 { return s.PrefixCacheHitPct / 100 }),
+	modelGauge("prompt_cache_bytes", "Memory held by retained prompt states (TensorFold).", func(s sample.Sample) float64 { return s.PromptCacheGB * (1 << 30) }),
+	modelGauge("prompt_cache_states", "Retained prompt states (TensorFold).", func(s sample.Sample) float64 { return s.PromptCacheStates }),
 	modelGauge("speculative_acceptance_ratio", "Speculative token acceptance ratio over the last successful poll interval.", func(s sample.Sample) float64 { return s.SpecAcceptPct / 100 }),
 }
 

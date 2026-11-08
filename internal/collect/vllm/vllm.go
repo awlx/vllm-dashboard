@@ -62,6 +62,11 @@ func Scrape(metricsURL string) (map[string]float64, error) {
 		if err != nil || math.IsNaN(val) || math.IsInf(val, 0) {
 			continue
 		}
+		// TensorFold reports KV occupancy per stream; the fullest stream is the pressure signal.
+		if name == "tensorfold:kv_cache_usage_perc" {
+			target[name] = max(target[name], val)
+			continue
+		}
 		// sum across label variants (e.g. request_success_total has one line per finished_reason)
 		total := target[name] + val
 		if math.IsInf(total, 0) {

@@ -442,7 +442,11 @@ TensorFold exporters are also supported:
   `tensorfold:generation_tokens_total` plus
   `tensorfold:generation_tokens_running`. These two series and
   `tensorfold:prompt_tokens_total` are necessary. The prefix-cache hit rate
-  is not available.
+  comes from `tensorfold:prefix_cache_hits_total` and
+  `tensorfold:prefix_cache_queries_total`, when the server has them.
+  `tensorfold:kv_cache_usage_perc` has one series for each stream. The
+  dashboard uses the highest value. `tensorfold:prompt_cache_bytes` and
+  `tensorfold:prompt_cache_states` give the prompt-cache size.
 
 A scrape fails when the response has no finite `vllm:` series and is not a
 valid native TensorFold response.
@@ -563,6 +567,8 @@ Labels: `node`, `node_key`, `model`, `model_key`.
 | `vllm_dashboard_model_itl_average_seconds` | gauge | Average inter-token latency over the last poll interval |
 | `vllm_dashboard_model_e2e_average_seconds` | gauge | Average end-to-end latency over the last poll interval |
 | `vllm_dashboard_model_prefix_cache_hit_ratio` | gauge | Cumulative prefix-cache hit ratio |
+| `vllm_dashboard_model_prompt_cache_bytes` | gauge | Memory of the kept prompt states (TensorFold only) |
+| `vllm_dashboard_model_prompt_cache_states` | gauge | Number of kept prompt states (TensorFold only) |
 | `vllm_dashboard_model_speculative_acceptance_ratio` | gauge | Speculative acceptance ratio over the last poll interval |
 | `vllm_dashboard_model_prompt_tokens_total` | counter | Engine prompt tokens; resets when the engine restarts |
 | `vllm_dashboard_model_generation_tokens_total` | counter | Engine generated tokens; resets when the engine restarts |

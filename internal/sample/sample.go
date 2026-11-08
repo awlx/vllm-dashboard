@@ -16,6 +16,8 @@ type Sample struct {
 	InterTokenMs      float64 `json:"inter_token_ms"`
 	E2ELatencyMs      float64 `json:"e2e_latency_ms"`
 	PrefixCacheHitPct float64 `json:"prefix_cache_hit_pct"`
+	PromptCacheGB     float64 `json:"prompt_cache_gb"`
+	PromptCacheStates float64 `json:"prompt_cache_states"`
 	PreemptionsTotal  float64 `json:"preemptions_total"`
 	CompletedRequests float64 `json:"completed_requests"`
 	ReqPerSec         float64 `json:"req_per_sec"`

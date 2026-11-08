@@ -34,9 +34,16 @@ func normalizeTensorFoldMetrics(raw map[string]float64) (map[string]float64, err
 		"inter_token_latency_seconds_sum":       "request_time_per_output_token_seconds_sum",
 		"inter_token_latency_seconds_count":     "request_time_per_output_token_seconds_count",
 		"num_preemptions_total":                 "preemptions_total",
+		"prefix_cache_queries_total":            "prefix_cache_queries_total",
+		"prefix_cache_hits_total":               "prefix_cache_hits_total",
 	} {
 		if value, ok := raw["tensorfold:"+source]; ok {
 			metrics["vllm:"+target] = value
+		}
+	}
+	for _, name := range []string{"tensorfold:prompt_cache_bytes", "tensorfold:prompt_cache_states"} {
+		if value, ok := raw[name]; ok && value >= 0 {
+			metrics[name] = value
 		}
 	}
 	total := raw["tensorfold:generation_tokens_total"] + raw["tensorfold:generation_tokens_running"]

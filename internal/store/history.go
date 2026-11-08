@@ -82,6 +82,8 @@ func AggregateSampleSets(sources [][]sample.Sample) []sample.Sample {
 			result[index].NetRxMbps += point.NetRxMbps
 			result[index].NetTxMbps += point.NetTxMbps
 			result[index].KVCachePct = max(result[index].KVCachePct, point.KVCachePct)
+			result[index].PromptCacheGB += point.PromptCacheGB
+			result[index].PromptCacheStates += point.PromptCacheStates
 			result[index].TTFTMs = max(result[index].TTFTMs, point.TTFTMs)
 			result[index].InterTokenMs = max(result[index].InterTokenMs, point.InterTokenMs)
 			result[index].E2ELatencyMs = max(result[index].E2ELatencyMs, point.E2ELatencyMs)
