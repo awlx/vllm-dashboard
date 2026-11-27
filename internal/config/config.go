@@ -159,6 +159,7 @@ const (
 	EnvListen   = "VLLM_DASHBOARD_LISTEN"
 	EnvHostname = "VLLM_DASHBOARD_HOSTNAME"
 	EnvPeers    = "VLLM_DASHBOARD_PEERS"
+	EnvNodes    = "VLLM_DASHBOARD_NODES"
 	EnvDiscover = "VLLM_DASHBOARD_DISCOVER"
 )
 
@@ -230,7 +231,72 @@ func (cfg *Config) applyEnv() error {
 	for _, peerURL := range strings.FieldsFunc(getenv(EnvPeers), func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
 		cfg.Peers = append(cfg.Peers, Peer{URL: peerURL})
 	}
+	if err := cfg.applyNodes(getenv(EnvNodes)); err != nil {
+		return err
+	}
 	return nil
+}
+
+// applyNodes adds one model per vLLM server URL of EnvNodes to the node
+// models. A model that is already in the file, or in the variable, with the
+// same URL is skipped.
+func (cfg *Config) applyNodes(value string) error {
+	used := map[string]bool{}
+	knownURLs := map[string]bool{}
+	for _, model := range cfg.Node.Models {
+		if model.Key != "" {
+			used[model.Key] = true
+		}
+		knownURLs[strings.TrimRight(model.MetricsURL, "/")] = true
+	}
+	nodeURLs := map[string]bool{}
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
+		model, err := NodeModel(raw)
+		if err != nil {
+			return fmt.Errorf("%s: %w", EnvNodes, err)
+		}
+		if knownURLs[model.MetricsURL] {
+			continue
+		}
+		if nodeURLs[model.MetricsURL] {
+			return fmt.Errorf("%s: duplicate node url %q", EnvNodes, raw)
+		}
+		model.Key = UniqueKey(model.Key, model.Port, used)
+		used[model.Key] = true
+		nodeURLs[model.MetricsURL] = true
+		cfg.Node.Models = append(cfg.Node.Models, model)
+	}
+	return nil
+}
+
+// NodeModel returns the model for a vLLM server base URL of EnvNodes, for
+// example "http://gpu0:8000". The metrics URL is the base URL plus
+// /metrics. The key and the fallback name come from the URL host; the name
+// is marked automatic so that the served model name from /v1/models
+// replaces it.
+func NodeModel(raw string) (Model, error) {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return Model{}, fmt.Errorf("invalid node url %q", raw)
+	}
+	if path := strings.TrimRight(parsed.Path, "/"); path != "" || parsed.RawQuery != "" || parsed.User != nil {
+		return Model{}, fmt.Errorf("node url %q must be scheme://host[:port]", raw)
+	}
+	host := parsed.Hostname()
+	key := SanitizeKey(ShortHostname(host))
+	if net.ParseIP(host) != nil {
+		key = SanitizeKey(host)
+	}
+	if key == "" {
+		key = "node"
+	}
+	return Model{
+		Key:        key,
+		Name:       host,
+		NameAuto:   true,
+		MetricsURL: strings.TrimRight(raw, "/") + "/metrics",
+		Port:       parsed.Port(),
+	}, nil
 }
 
 // dropLegacyFields logs and clears the obsolete fields of an old file.
