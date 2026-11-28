@@ -10,7 +10,10 @@ the host. One Go binary monitors one node or a fleet of nodes.
 
 - Live charts for throughput, latency, requests, KV cache, prefix cache, and
   speculative decoding.
-- GPU data from `nvidia-smi` or `amd-smi`.
+- A per-GPU table with VRAM attributed to each model (color-coded
+  segments), memory busy, utilization, temperature, power, and clock, from
+  `nvidia-smi` or `amd-smi`. In the single-model view the table shows only
+  the GPUs that model uses.
 - Host data from `/proc` and sysfs.
 - Automatic discovery of local vLLM and TensorFold servers.
 - Fleet view of many nodes and models.
@@ -134,7 +137,7 @@ The image is `ghcr.io/awlx/vllm-dashboard`. It runs on `linux/amd64` and
 | Flag | Reason |
 | --- | --- |
 | `--gpus all` | GPU data. Needs the NVIDIA Container Toolkit. |
-| `--pid host` | Discovery and vLLM process data. |
+| `--pid host` | Discovery, vLLM process data, and per-model VRAM attribution. |
 | `--network host` | Host network data and access to vLLM on `127.0.0.1`. |
 
 These flags decrease the isolation of the container. Use them only on trusted

@@ -39,13 +39,13 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-d
 | Entry point | `cmd/vllm-dashboard` | `main` | Loads the configuration, runs the first model discovery, reads the vLLM and kernel versions, starts the GPU sampler, the poller, and the peer resolver, registers the handlers on one `http.ServeMux`, and serves HTTP. |
 | Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `CompleteModel`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. The file is optional. It rejects unknown fields. It logs and ignores obsolete fields. Applies the `VLLM_DASHBOARD_*` environment variables. Fills empty fields from the host name, the URLs, and the ports. |
 | Model discovery | `internal/discovery` | `Scan`, `Probe`, `Discover`, `Merge`, `NameModels`, `Tracker` | Finds vLLM and TensorFold server processes in `/proc`, reads their flags and systemd unit, and checks their `/metrics` endpoint. `Tracker` keeps a stopped model for a grace time and then removes it. |
-| Data types | `internal/sample` | `Sample`, `TokenUsage`, `ModelOverview`, `ServerInfo` | JSON types of the HTTP API. |
+| Data types | `internal/sample` | `Sample`, `GPUStat`, `GPUModelMem`, `TokenUsage`, `ModelOverview`, `ServerInfo` | JSON types of the HTTP API. `Sample.GPUs` holds one `GPUStat` per card of the host, and `Sample.GPUModels` holds the per-model VRAM of each GPU. |
 | Local state | `internal/store` | `Store`, `ModelState`, `New`, `Update`, `Append`, `Samples`, `Snapshot`, `HistorySize`, `OnlineWindow`, `AppendLongSample`, `AggregateSampleSets`, `HistoryWindow`, `LongInterval`, `LongSize` | Holds the state and history of each local model and the latest host sample. One `sync.RWMutex` in `Store` protects them. Builds the minute rollup and calculates token usage windows. |
 | Poll loop | `internal/poller` | `Poller`, `New`, `Run`, `Poll`, `Discover`, `recordScrape` | Runs `Poll` on a ticker at the poll interval (default 1 s). Runs `Discover` every 30 s. Polls never overlap. Collects host telemetry once and then scrapes all local models in parallel. Calculates rates and averages and writes samples to the store. |
 | vLLM scraper | `internal/collect/vllm` | `Scrape`, `ServedModelName`, `normalizeTensorFoldMetrics` | Reads the Prometheus text from each model's `metrics_url`. Keeps `vllm:` series (and `tensorfold:` series), skips histogram buckets, and sums label variants per name. |
-| GPU sampler | `internal/collect/gpu` | `Sampler`, `NewSampler`, `Run`, `Latest`, `Scrape`, `parseNvidiaSMI`, `scrapeAMD` | Runs in its own goroutine. Runs `nvidia-smi`. If it reports no values, runs `amd-smi`. The poller uses the last reading. |
+| GPU sampler | `internal/collect/gpu` | `Sampler`, `NewSampler`, `Run`, `Latest`, `Scrape`, `parseNvidiaSMI`, `parseComputeApps`, `scrapeAMD` | Runs in its own goroutine. Runs `nvidia-smi`. If it reports no GPUs, runs `amd-smi`. The reading has one stat per GPU (index, uuid, name, VRAM used/total, utilization, memory busy, temperature, power, clock) plus the aggregates used by the host gauges. On NVIDIA hosts it additionally reads the per-process VRAM (pid, GPU uuid, used memory) with `nvidia-smi --query-compute-apps`; `amd-smi` has no per-process data. The poller uses the last reading. |
 | Host scraper | `internal/collect/host` | `CPUTimes`, `CPUClockMHz`, `Memory`, `Network`, `KernelVersion` | Reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/sys/kernel/osrelease`, and CPU frequency files in sysfs. |
-| Process and service metadata | `internal/collect/process` | `Identity`, `ServerInfo`, `StartedAt`, `DisplayName`, `Cache`, `NewCache`, `Invalidate` | Finds the vLLM process in `/proc`, reads `/proc/<pid>/cmdline`, and reads `systemctl show` properties from the system manager or the user manager. `Cache` keeps the results. |
+| Process and service metadata | `internal/collect/process` | `Identity`, `ServerInfo`, `StartedAt`, `DisplayName`, `Attribute`, `Cache`, `NewCache`, `Invalidate` | Finds the vLLM process in `/proc`, reads `/proc/<pid>/cmdline`, and reads `systemctl show` properties from the system manager or the user manager. `Attribute` maps a PID to the key of the configured model whose server started it, walking up to five ancestor processes so that engine workers count; without a match the PID is `other`. `Cache` keeps the results. |
 | Cache | `internal/cache` | `TTL`, `NewTTL`, `Get`, `Invalidate`, `Reset` | Generic cache that keeps one value per key for a fixed time. |
 | Fleet aggregation | `internal/fleet` | `Fleet`, `FanOut`, `ResolvePeers`, `RunResolver`, `NodeInfo`, `MetricsForRequest`, `CombinedOverview`, `PeerAPI`, `PeerForModel`, `PeerTimeout`, `PeerConcurrency` | Reads the identity of each peer from `/api/node` every 30 s. Resolves model keys, fetches peer JSON APIs in parallel on request, and merges them with local data. |
 | HTTP API | `internal/api` | `Register`, `Settings`, `CurrentSettings`, `WriteJSON`, `GzipJSON` | Handlers for `/api/metrics`, `/api/metrics/long`, `/api/info`, `/api/tokens`, `/api/settings`, `/api/overview`, and `/api/node`. Optional gzip. |
@@ -374,6 +374,14 @@ Details of one model poll:
 - The browser sends the next request of a type only after the previous
   response arrives. It stops all requests while the browser tab is hidden.
 - A GPU reading older than `max(5 x poll interval, 10 s)` reads as zero.
+- Per-model VRAM: on NVIDIA hosts the poller maps every process of the GPU
+  reading to a model key from its command line (or the command line of one of
+  its ancestors), joins the process memory to a GPU by the GPU uuid, and sums
+  the memory per model and GPU into `Sample.GPUModels`. Memory that belongs
+  to no known model is reported under the pseudo-model `other`. `amd-smi`
+  hosts have no per-process data. If the dashboard cannot read
+  `/proc/<pid>/cmdline` (for example, it misses `pid: host` in a container),
+  all memory is reported under `other`.
 - When the UI shows `all`, it also requests the history of each model to draw
   one line for each node or model.
 
@@ -539,6 +547,16 @@ Labels: `node`, `node_key`.
 | `vllm_dashboard_node_gpu_temperature_celsius` | gauge | GPU temperature |
 | `vllm_dashboard_node_gpu_power_watts` | gauge | GPU power |
 | `vllm_dashboard_node_gpu_clock_hertz` | gauge | GPU clock |
+| `vllm_dashboard_node_gpu_memory_used_bytes` | gauge | VRAM used across all GPUs |
+| `vllm_dashboard_node_gpu_memory_total_bytes` | gauge | VRAM total across all GPUs |
+| `vllm_dashboard_node_gpus_memory_used_bytes` | gauge | VRAM used of one GPU; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpus_memory_total_bytes` | gauge | VRAM total of one GPU; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpus_utilization_percent` | gauge | Utilization of one GPU in percent; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpus_memory_utilization_percent` | gauge | Memory busy of one GPU in percent; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpus_temperature_celsius` | gauge | Temperature of one GPU; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpus_power_watts` | gauge | Power of one GPU; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpus_clock_hertz` | gauge | Clock of one GPU; labels `node`, `node_key`, `gpu` |
+| `vllm_dashboard_node_gpu_model_memory_bytes` | gauge | VRAM used by one model on one GPU, in bytes; labels `node`, `node_key`, `gpu`, `model`. Here `model` is a model key or the pseudo-model `other`, not the served model name |
 | `vllm_dashboard_node_memory_used_ratio` | gauge | Memory use, 0 to 1 |
 | `vllm_dashboard_node_memory_used_bytes` | gauge | Memory used |
 | `vllm_dashboard_node_memory_total_bytes` | gauge | Memory total |

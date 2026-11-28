@@ -30,6 +30,8 @@ func exportedLabels(t *testing.T) map[string]map[string]bool {
 		ReqPerSec: 1, TTFTMs: 1, InterTokenMs: 1, E2ELatencyMs: 1, PrefixCacheHitPct: 1, SpecAcceptPct: 1,
 		CPUUtilPct: 1, CPUClockMHz: 1, GPUUtilPct: 1, GPUTempC: 1, GPUPowerW: 1, GPUClockMHz: 1,
 		MemUsedPct: 1, MemUsedGB: 1, MemTotalGB: 1, NetRxMbps: 1, NetTxMbps: 1,
+		GPUs:      []sample.GPUStat{{Index: 0, UUID: "GPU-test", Name: "Test GPU", VRAMUsedMB: 1, VRAMTotalMB: 1, UtilPct: 1, MemUtilPct: 1, TempC: 1, PowerW: 1, ClockMHz: 1}},
+		GPUModels: []sample.GPUModelMem{{GPU: 0, Model: "test-model", MB: 1}},
 	}
 	collector := &telemetryCollector{now: now, nodes: []telemetryNode{{key: "node-a", name: "Node A", up: true, snapshot: TelemetrySnapshot{
 		KernelVersion: "6.8.0",
