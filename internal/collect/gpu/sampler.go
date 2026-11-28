@@ -11,15 +11,15 @@ import (
 // must not wait for them.
 type Sampler struct {
 	interval time.Duration
-	scrape   func() (util, temp, power, clock float64)
+	scrape   func() Reading
 
 	mu     sync.Mutex
 	latest reading
 }
 
 type reading struct {
-	util, temp, power, clock float64
-	at                       time.Time
+	Reading
+	at time.Time
 }
 
 // NewSampler returns a sampler that reads the GPUs at interval.
@@ -36,10 +36,10 @@ func (s *Sampler) StaleAfter() time.Duration {
 // Sample reads the GPUs once and returns how long the read took.
 func (s *Sampler) Sample() time.Duration {
 	start := time.Now()
-	util, temp, power, clock := s.scrape()
+	r := s.scrape()
 	now := time.Now()
 	s.mu.Lock()
-	s.latest = reading{util: util, temp: temp, power: power, clock: clock, at: now}
+	s.latest = reading{Reading: r, at: now}
 	s.mu.Unlock()
 	return now.Sub(start)
 }
@@ -60,18 +60,19 @@ func (s *Sampler) Run(ctx context.Context) {
 	}
 }
 
-// Latest returns the last reading, or zeros if it is missing or stale.
-func (s *Sampler) Latest(now time.Time) (util, temp, power, clock float64) {
+// Latest returns the last reading, or an empty reading if it is missing or
+// stale.
+func (s *Sampler) Latest(now time.Time) Reading {
 	s.mu.Lock()
 	r := s.latest
 	s.mu.Unlock()
 	if r.at.IsZero() || now.Sub(r.at) > s.StaleAfter() {
-		return 0, 0, 0, 0
+		return Reading{}
 	}
-	return r.util, r.temp, r.power, r.clock
+	return r.Reading
 }
 
 // NewSamplerFunc returns a sampler that calls scrape instead of the GPU tools.
-func NewSamplerFunc(interval time.Duration, scrape func() (util, temp, power, clock float64)) *Sampler {
+func NewSamplerFunc(interval time.Duration, scrape func() Reading) *Sampler {
 	return &Sampler{interval: interval, scrape: scrape}
 }

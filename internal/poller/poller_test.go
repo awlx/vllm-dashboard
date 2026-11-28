@@ -57,9 +57,9 @@ func TestSlowGPUScrapeDoesNotBlockPoll(t *testing.T) {
 	defer server.Close()
 	st := store.New(config.Config{Node: config.Node{Key: "n", Models: []config.Model{{Key: "m", MetricsURL: server.URL + "/metrics"}}}})
 	release := make(chan struct{})
-	gpus := gpu.NewSamplerFunc(time.Second, func() (float64, float64, float64, float64) {
+	gpus := gpu.NewSamplerFunc(time.Second, func() gpu.Reading {
 		<-release
-		return 1, 1, 1, 1
+		return gpu.Reading{Util: 1, Temp: 1, Power: 1, Clock: 1}
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

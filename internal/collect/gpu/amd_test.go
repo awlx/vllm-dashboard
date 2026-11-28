@@ -3,6 +3,8 @@ package gpu
 import (
 	"math"
 	"testing"
+
+	"github.com/awlx/vllm-dashboard/internal/sample"
 )
 
 // Fixtures follow the amd-smi metric JSON layout of each ROCm release.
@@ -62,6 +64,27 @@ const amdSMIAllUnavailable = `{"gpu_data": [
      "temperature": {"edge": "N/A", "hotspot": "N/A", "mem": "N/A"}}
 ]}`
 
+const amdSMIWithMemory = `{
+    "gpu_data": [
+        {
+            "gpu": 0,
+            "usage": {"gfx_activity": {"value": 87, "unit": "%"}, "umc_activity": {"value": 40, "unit": "%"}},
+            "memory": {"total_memory": {"value": 32768, "unit": "MB"}, "vram_used": {"value": 10240, "unit": "MB"}, "vram_free": {"value": 22528, "unit": "MB"}},
+            "power": {"socket_power": {"value": 612, "unit": "W"}},
+            "clock": {"gfx_0": {"clk": {"value": 2100, "unit": "MHz"}}},
+            "temperature": {"edge": "N/A", "hotspot": {"value": 71, "unit": "C"}, "mem": {"value": 60, "unit": "C"}}
+        },
+        {
+            "gpu": 1,
+            "usage": {"gfx_activity": {"value": 13, "unit": "%"}, "umc_activity": "N/A"},
+            "memory": {"total_memory": "N/A", "vram_used": "N/A"},
+            "power": {"socket_power": "N/A"},
+            "clock": {"gfx_0": {"clk": "N/A"}},
+            "temperature": {"edge": "N/A", "hotspot": "N/A", "mem": "N/A"}
+        }
+    ]
+}`
+
 func TestParseAMDSMIMetrics(t *testing.T) {
 	cases := []struct {
 		name                     string
@@ -82,8 +105,8 @@ func TestParseAMDSMIMetrics(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			util, temp, power, clock := parseAMDSMIMetrics([]byte(tc.in))
-			got := []float64{util, temp, power, clock}
+			reading := parseAMDSMIMetrics([]byte(tc.in))
+			got := []float64{reading.Util, reading.Temp, reading.Power, reading.Clock}
 			want := []float64{tc.util, tc.temp, tc.power, tc.clock}
 			for i, name := range []string{"util", "temp", "power", "clock"} {
 				if math.Abs(got[i]-want[i]) > 1e-9 {
@@ -91,5 +114,21 @@ func TestParseAMDSMIMetrics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseAMDSMIMemory(t *testing.T) {
+	reading := parseAMDSMIMetrics([]byte(amdSMIWithMemory))
+	if len(reading.GPUs) != 2 {
+		t.Fatalf("got %d GPUs, want 2: %+v", len(reading.GPUs), reading.GPUs)
+	}
+	first := reading.GPUs[0]
+	want := sample.GPUStat{Index: 0, VRAMUsedMB: 10240, VRAMTotalMB: 32768, UtilPct: 87, MemUtilPct: 40, TempC: 71, PowerW: 612, ClockMHz: 2100}
+	if first != want {
+		t.Errorf("GPU 0 = %+v, want %+v", first, want)
+	}
+	second := reading.GPUs[1]
+	if second.Index != 1 || second.VRAMUsedMB != 0 || second.VRAMTotalMB != 0 || second.MemUtilPct != 0 {
+		t.Errorf("GPU 1 = %+v, want N/A fields zero", second)
 	}
 }

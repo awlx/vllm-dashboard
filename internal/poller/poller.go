@@ -4,6 +4,7 @@ package poller
 
 import (
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -100,11 +101,13 @@ func (p *Poller) Poll() {
 	memUsedGB, memTotalGB, memUsedPct := host.Memory()
 	netRx, netTx := host.Network()
 	now := time.Now()
-	gpuUtil, gpuTemp, gpuPower, gpuClock := p.gpus.Latest(now)
+	gpuReading := p.gpus.Latest(now)
 
 	shared := sample.Sample{
 		Time:       now.UnixMilli(),
-		GPUUtilPct: gpuUtil, GPUTempC: gpuTemp, GPUPowerW: gpuPower, GPUClockMHz: gpuClock,
+		GPUUtilPct: gpuReading.Util, GPUTempC: gpuReading.Temp, GPUPowerW: gpuReading.Power, GPUClockMHz: gpuReading.Clock,
+		GPUs:        gpuReading.GPUs,
+		GPUModels:   attributeGPUModels(gpuReading, attributeGPUProcModels(gpuReading, p.store.Models())),
 		CPUClockMHz: cpuClock,
 		MemUsedGB:   memUsedGB, MemTotalGB: memTotalGB, MemUsedPct: memUsedPct,
 	}
@@ -134,6 +137,58 @@ func (p *Poller) Poll() {
 		wg.Go(func() { p.pollModel(model, shared, now) })
 	}
 	wg.Wait()
+}
+
+// attributeGPUProcModels resolves the model key of each GPU process in the
+// reading from its command line, or the pseudo-model other.
+func attributeGPUProcModels(reading gpu.Reading, models []config.Model) map[int]string {
+	if len(reading.Procs) == 0 {
+		return nil
+	}
+	pids := make([]int, len(reading.Procs))
+	for i, proc := range reading.Procs {
+		pids[i] = proc.PID
+	}
+	return process.Attribute(models, pids)
+}
+
+// attributeGPUModels joins the per-process GPU memory of a reading to a GPU
+// by the GPU UUID and sums the memory of all processes that keys maps to
+// the same model on the same GPU. Processes on a GPU that is not in the
+// reading are dropped.
+func attributeGPUModels(reading gpu.Reading, keys map[int]string) []sample.GPUModelMem {
+	if len(reading.Procs) == 0 {
+		return nil
+	}
+	byUUID := map[string]int{}
+	for _, gpu := range reading.GPUs {
+		if gpu.UUID != "" {
+			byUUID[gpu.UUID] = gpu.Index
+		}
+	}
+	type pair struct {
+		gpu   int
+		model string
+	}
+	sums := map[pair]float64{}
+	for _, proc := range reading.Procs {
+		index, ok := byUUID[proc.UUID]
+		if !ok {
+			continue
+		}
+		sums[pair{index, keys[proc.PID]}] += proc.MB
+	}
+	result := make([]sample.GPUModelMem, 0, len(sums))
+	for pair, mb := range sums {
+		result = append(result, sample.GPUModelMem{GPU: pair.gpu, Model: pair.model, MB: mb})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].GPU != result[j].GPU {
+			return result[i].GPU < result[j].GPU
+		}
+		return result[i].Model < result[j].Model
+	})
+	return result
 }
 
 func (p *Poller) pollModel(model config.Model, shared sample.Sample, now time.Time) {

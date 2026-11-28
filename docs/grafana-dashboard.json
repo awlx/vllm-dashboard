@@ -1326,6 +1326,107 @@
             }
           },
           "description": "Used host memory as a ratio of total memory."
+        },
+        {
+          "id": 38,
+          "title": "GPU memory (per GPU)",
+          "description": "VRAM used per GPU and the total capacity of each card.",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 78,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "vllm_dashboard_node_gpus_memory_used_bytes{job=\"$job\",instance=\"$instance\",node=~\"$node\"}",
+              "legendFormat": "{{node}} GPU {{gpu}}"
+            },
+            {
+              "refId": "B",
+              "expr": "vllm_dashboard_node_gpus_memory_total_bytes{job=\"$job\",instance=\"$instance\",node=~\"$node\"}",
+              "legendFormat": "{{node}} GPU {{gpu}} (total)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 39,
+          "title": "VRAM by model",
+          "description": "VRAM used by each model on each GPU, stacked.",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 86,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "vllm_dashboard_node_gpu_model_memory_bytes{job=\"$job\",instance=\"$instance\",node=~\"$node\"}",
+              "legendFormat": "{{node}} GPU {{gpu}} · {{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "normal",
+                  "groups": null
+                }
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
         }
       ]
     },

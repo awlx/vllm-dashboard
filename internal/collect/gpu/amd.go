@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/awlx/vllm-dashboard/internal/sample"
 )
 
 // commandTimeout bounds GPU tool calls so that a slow or hung tool cannot
@@ -20,10 +22,10 @@ func commandOutput(name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-func scrapeAMD() (util, temp, power, clock float64) {
-	out, err := commandOutput("amd-smi", "metric", "--usage", "--temp", "--power", "--clock", "--json")
+func scrapeAMD() Reading {
+	out, err := commandOutput("amd-smi", "metric", "--usage", "--temp", "--power", "--clock", "--memory", "--json")
 	if err != nil {
-		return 0, 0, 0, 0
+		return Reading{}
 	}
 	return parseAMDSMIMetrics(out)
 }
@@ -32,48 +34,74 @@ func scrapeAMD() (util, temp, power, clock float64) {
 // {"gpu_data": [...]} wrapper (ROCm 7.0 and newer) and the top-level array
 // (ROCm 6.x). Values can be numbers, numeric strings, {"value": ...} objects,
 // or "N/A". Utilization, temperature, and clock are averaged over the GPUs
-// that report them. Power is summed.
-func parseAMDSMIMetrics(out []byte) (util, temp, power, clock float64) {
+// that report them. Power is summed. Memory fields are only present when
+// amd-smi supports the --memory flag.
+func parseAMDSMIMetrics(out []byte) Reading {
+	reading := Reading{}
 	gpus := amdSMIGPUs(out)
 	var utilSum, tempSum, clockSum float64
 	var utilN, tempN, clockN int
 	for _, gpu := range gpus {
+		stat := sample.GPUStat{}
+		if v, ok := firstAMDValue(gpu, []string{"gpu"}); ok {
+			stat.Index = int(v)
+		}
 		if v, ok := firstAMDValue(gpu,
 			[]string{"usage", "gfx_activity"},
 			[]string{"usage", "gfx_usage"}); ok {
+			stat.UtilPct = v
 			utilSum += v
 			utilN++
+		}
+		if v, ok := firstAMDValue(gpu,
+			[]string{"usage", "umc_activity"},
+			[]string{"usage", "mem_usage"}); ok {
+			stat.MemUtilPct = v
 		}
 		if v, ok := firstAMDValue(gpu,
 			[]string{"temperature", "edge"},
 			[]string{"temperature", "hotspot"},
 			[]string{"temperature", "junction"}); ok {
+			stat.TempC = v
 			tempSum += v
 			tempN++
 		}
 		if v, ok := firstAMDValue(gpu,
 			[]string{"power", "socket_power"},
 			[]string{"power", "current_power"}); ok {
-			power += v
+			stat.PowerW = v
+			reading.Power += v
 		}
 		if v, ok := firstAMDValue(gpu,
 			[]string{"clock", "gfx_0", "clk"},
 			[]string{"clock", "gfx", "clk"},
 			[]string{"clock", "gfx", "cur_clk"}); ok {
+			stat.ClockMHz = v
 			clockSum += v
 			clockN++
 		}
+		if v, ok := firstAMDValue(gpu,
+			[]string{"memory", "vram_used"},
+			[]string{"memory", "used"}); ok {
+			stat.VRAMUsedMB = v
+		}
+		if v, ok := firstAMDValue(gpu,
+			[]string{"memory", "total_memory"},
+			[]string{"memory", "total"}); ok {
+			stat.VRAMTotalMB = v
+		}
+		reading.GPUs = append(reading.GPUs, stat)
 	}
 	if utilN > 0 {
-		util = utilSum / float64(utilN)
+		reading.Util = utilSum / float64(utilN)
 	}
 	if tempN > 0 {
-		temp = tempSum / float64(tempN)
+		reading.Temp = tempSum / float64(tempN)
 	}
 	if clockN > 0 {
-		clock = clockSum / float64(clockN)
+		reading.Clock = clockSum / float64(clockN)
 	}
-	return util, temp, power, clock
+	return reading
 }
 
 func amdSMIGPUs(out []byte) []map[string]any {

@@ -275,6 +275,64 @@
   .token-grid .card { padding: 12px 16px; }
   .token-grid .value { font-size: 20px; }
   .token-grid .sub-value { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .card .sub-value { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .gpu-panel {
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    background: linear-gradient(160deg, var(--panel), #0e141c);
+    padding: 4px 8px 6px;
+    margin-bottom: 24px;
+    overflow-x: auto;
+    transition: border-color .15s;
+  }
+  .gpu-panel:hover { border-color: var(--panel-border-hover); }
+  .gpu-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 620px; }
+  .gpu-table th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    padding: 12px 12px 8px;
+    white-space: nowrap;
+  }
+  .gpu-table td {
+    padding: 10px 12px;
+    border-top: 1px solid var(--panel-border);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .gpu-table .gpu-id { font-weight: 650; }
+  .gpu-table .gpu-sub { color: var(--muted); font-size: 11px; font-weight: 400; margin-left: 7px; }
+  .gpu-node + .gpu-node { margin-top: 14px; }
+  .gpu-node-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    padding: 10px 12px 0;
+  }
+  .gpu-empty { text-align: center; color: var(--muted); padding: 16px; }
+  .vram-cell {
+    display: grid;
+    grid-template-columns: minmax(120px, auto) minmax(90px, 1fr);
+    align-items: center;
+    gap: 10px;
+  }
+  .vram-total { color: var(--muted); }
+  .vram-bar {
+    display: flex; height: 6px; border-radius: 3px;
+    background: rgba(255,255,255,0.08); overflow: hidden;
+  }
+  .vram-seg { height: 100%; }
+  .gpu-legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 12px 10px; }
+  .gpu-legend-item {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12.5px; color: var(--text);
+  }
+  .gpu-legend-dot { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
   @media (prefers-reduced-motion: reduce) {
     h1 .dot { animation: none; }
     * { transition: none !important; }
@@ -340,6 +398,7 @@
     <div class="card" data-host-metric><div class="label">GPU Utilization</div><div class="value" id="gpu_util">–<span class="unit">%</span></div></div>
     <div class="card" data-host-metric><div class="label">GPU Temp</div><div class="value" id="gpu_temp">–<span class="unit">°C</span></div></div>
     <div class="card" data-host-metric><div class="label">GPU Power</div><div class="value" id="gpu_power">–<span class="unit">W</span></div></div>
+    <div class="card" data-host-metric><div class="label">GPU Memory</div><div class="value" id="gpu_mem">–<span class="unit">%</span></div><div class="sub-value" id="gpu_mem_gb"></div></div>
     <div class="card"><div class="label">KV Cache Usage</div><div class="value" id="kv_cache">–<span class="unit">%</span></div></div>
     <div class="card"><div class="label">Running Requests</div><div class="value" id="running">–</div></div>
     <div class="card"><div class="label">Waiting Requests</div><div class="value" id="waiting">–</div></div>
@@ -359,6 +418,8 @@
     <div class="card" data-host-metric><div class="label">Network RX</div><div class="value" id="net_rx">–<span class="unit">Mbps</span></div></div>
     <div class="card" data-host-metric><div class="label">Network TX</div><div class="value" id="net_tx">–<span class="unit">Mbps</span></div></div>
   </div>
+
+  <div class="gpu-panel" id="gpu_panel" aria-label="GPUs"></div>
 
   <div class="charts">
     <div class="chart-card">
@@ -1107,6 +1168,133 @@ function setCardLevel(id, value, warnAt, badAt) {
   for (const name of ['good', 'warn', 'bad']) el.classList.toggle(name, name === level);
 }
 
+// Stable colors for the per-model VRAM segments, in order of the model list.
+const modelColors = ['#6c9ef8', '#f0a35e', '#5ec98f', '#c586e8', '#ef7178', '#57c7d4', '#d4b06a', '#a3b18a'];
+const otherColor = 'rgba(148, 163, 184, 0.4)';
+
+// Samples carry the local model key, while the model switcher and the
+// overview use the scoped key "<node key>/<model key>". Keys never contain
+// a slash, so the local key is the part after the last slash.
+function localKeyOf(key) {
+  const index = key.lastIndexOf('/');
+  return index < 0 ? key : key.slice(index + 1);
+}
+
+function keyOf(local) {
+  for (const item of overviewData) {
+    if (item.key === local || item.key.endsWith('/' + local)) return item.key;
+  }
+  return local;
+}
+
+function modelName(key) {
+  const model = overviewData.find(item => item.key === keyOf(key));
+  return model ? model.name || key : key;
+}
+
+function modelColor(key) {
+  if (key === 'other') return otherColor;
+  const index = overviewData.findIndex(item => item.key === keyOf(key));
+  return modelColors[(index < 0 ? 0 : index) % modelColors.length];
+}
+
+// Per-model VRAM entries of one GPU, sorted by size.
+function gpuModelEntries(models, index) {
+  const entries = (models || []).filter(m => m.gpu === index && m.mb > 0);
+  entries.sort((a, b) => b.mb - a.mb);
+  return entries;
+}
+
+// Builds the per-GPU hardware table: VRAM split by model, memory busy,
+// utilization, temperature, power, and clock.
+function gpuTableHTML(gpus, models) {
+  if (!gpus || !gpus.length) {
+    return '<div class="gpu-empty">No GPU data</div>';
+  }
+  const rows = gpus.map(g => {
+    const name = g.name ? `<span class="gpu-sub">${esc(g.name)}</span>` : '';
+    const segments = gpuModelEntries(models, g.index).map(m => {
+      const width = g.vram_total_mb > 0 ? (m.mb / g.vram_total_mb) * 100 : 0;
+      return `<span class="vram-seg" style="width:${Math.min(100, Math.max(0, width)).toFixed(2)}%;background:${modelColor(m.model)}" title="${esc(modelName(m.model))}: ${(m.mb / 1024).toFixed(1)} GB"></span>`;
+    }).join('');
+    return `<tr>
+      <td class="gpu-id">GPU ${g.index}${name}</td>
+      <td><div class="vram-cell"><span>${(g.vram_used_mb / 1024).toFixed(1)} <span class="vram-total">/ ${(g.vram_total_mb / 1024).toFixed(1)} GB</span></span><div class="vram-bar">${segments}</div></div></td>
+      <td>${g.mem_util_pct.toFixed(0)}%</td>
+      <td>${g.util_pct.toFixed(0)}%</td>
+      <td>${g.temp_c.toFixed(0)} °C</td>
+      <td>${g.power_w.toFixed(1)} W</td>
+      <td>${g.clock_mhz.toFixed(0)} MHz</td>
+    </tr>`;
+  }).join('');
+  return `<table class="gpu-table">
+    <thead><tr><th>GPU</th><th>VRAM</th><th>Mem busy</th><th>Util</th><th>Temp</th><th>Power</th><th>Clock</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Builds the legend under the GPU table: total VRAM per model over all
+// listed GPUs, plus the memory that belongs to no known model.
+function gpuLegendHTML(entries) {
+  const totals = new Map();
+  for (const {gpus, models} of entries) {
+    for (const m of models || []) {
+      if (m.mb <= 0 || m.model === 'other') continue;
+      totals.set(m.model, (totals.get(m.model) || 0) + m.mb);
+    }
+    const attributed = new Map();
+    for (const m of models || []) {
+      if (m.model !== 'other' && m.mb > 0) attributed.set(m.gpu, (attributed.get(m.gpu) || 0) + m.mb);
+    }
+    for (const g of gpus || []) {
+      const used = g.vram_used_mb - (attributed.get(g.index) || 0);
+      if (used > 0) totals.set('other', (totals.get('other') || 0) + used);
+    }
+  }
+  if (!totals.size) return '';
+  const items = [...totals.entries()]
+    .filter(([, mb]) => (mb / 1024).toFixed(1) !== '0.0')
+    .sort((a, b) => (a[0] === 'other' ? 1 : 0) - (b[0] === 'other' ? 1 : 0) || b[1] - a[1])
+    .map(([model, mb]) => `<span class="gpu-legend-item"><span class="gpu-legend-dot" style="background:${modelColor(model)}"></span>${esc(modelName(model))} <span class="legend-value">${(mb / 1024).toFixed(1)} GB</span></span>`);
+  if (!items.length) return '';
+  return `<div class="gpu-legend">${items.join('')}</div>`;
+}
+
+// The GPUs relevant to a model view: only the GPUs the model uses, falling
+// back to all GPUs of the node without model attribution data.
+function visibleGPUs(last, model) {
+  const gpus = last.gpus || [];
+  const models = last.gpu_models || [];
+  if (model === 'all' || !gpus.length || !models.length) return gpus;
+  const local = localKeyOf(model);
+  const used = new Set(models.filter(m => m.model === local && m.mb > 0).map(m => m.gpu));
+  if (!used.size) return gpus;
+  return gpus.filter(g => used.has(g.index));
+}
+
+// Renders the GPU panel of the selected model: only the GPUs the model uses.
+// Without model attribution data all GPUs stay visible.
+function renderGPUs(last) {
+  const gpus = last.gpus || [];
+  const models = last.gpu_models || [];
+  const visible = visibleGPUs(last, selectedModel);
+  const visibleModels = models.filter(m => visible.some(g => g.index === m.gpu));
+  setHTML(document.getElementById('gpu_panel'), gpuTableHTML(visible, visibleModels) + gpuLegendHTML([{gpus: visible, models: visibleModels}]));
+}
+
+function renderGPUsFleet(nodes) {
+  const entries = nodes.map(node => {
+    const latest = node.latest || {};
+    return {gpus: latest.gpus || [], models: latest.gpu_models || []};
+  });
+  const blocks = nodes.map((node, i) => `
+    <div class="gpu-node">
+      <div class="gpu-node-title">${esc(node.node_name)}</div>
+      ${gpuTableHTML(entries[i].gpus, entries[i].models)}
+    </div>`).join('');
+  setHTML(document.getElementById('gpu_panel'), blocks + gpuLegendHTML(entries));
+}
+
 async function refresh() {
   try {
     const model = selectedModel;
@@ -1141,6 +1329,26 @@ async function refresh() {
     setValue('mem_used', last.mem_used_pct.toFixed(0));
     setValue('net_rx', last.net_rx_mbps.toFixed(last.net_rx_mbps < 0.1 ? 2 : 1));
     setValue('net_tx', last.net_tx_mbps.toFixed(last.net_tx_mbps < 0.1 ? 2 : 1));
+
+    if (model !== 'all') renderGPUs(last);
+    // The GPU cards follow the model view: in single-model mode they cover
+    // only the GPUs the model uses, like the GPU table below them.
+    const cardGpus = model === 'all' ? (last.gpus || []) : visibleGPUs(last, model);
+    let vramUsed = 0, vramTotal = 0, utilSum = 0, tempSum = 0, powerSum = 0;
+    for (const g of cardGpus) {
+      vramUsed += g.vram_used_mb; vramTotal += g.vram_total_mb;
+      utilSum += g.util_pct; tempSum += g.temp_c; powerSum += g.power_w;
+    }
+    if (model !== 'all' && cardGpus.length) {
+      setValue('gpu_util', (utilSum / cardGpus.length).toFixed(0));
+      setValue('gpu_temp', (tempSum / cardGpus.length).toFixed(0));
+      setValue('gpu_power', powerSum.toFixed(1));
+    }
+    if (vramTotal > 0) {
+      setValue('gpu_mem', ((vramUsed / vramTotal) * 100).toFixed(0));
+      setText(document.getElementById('gpu_mem_gb'), `${(vramUsed / 1024).toFixed(1)} / ${(vramTotal / 1024).toFixed(1)} GB`);
+      setCardLevel('gpu_mem', (vramUsed / vramTotal) * 100, 80, 92);
+    }
 
     setCardLevel('gpu_temp', last.gpu_temp_c, 75, 85);
     setCardLevel('kv_cache', last.kv_cache_pct, 80, 93);
@@ -1274,6 +1482,7 @@ async function refreshOverview() {
         <div class="model-stat"><div class="k">CPU / Memory</div><div class="v">${(latest.cpu_util_pct || 0).toFixed(0)}% / ${(latest.mem_used_pct || 0).toFixed(0)}%</div></div>
       </div>`;
     }).join(''));
+    if (selectedModel === 'all') renderGPUsFleet(nodes);
     setHTML(document.getElementById('model-overview'), overviewData.map(model => {
       const latest = model.latest || {};
       return `<div class="model-card">
@@ -1309,6 +1518,7 @@ document.querySelector('.model-switcher').addEventListener('click', event => {
   const label = selectedModel === 'all' ? 'All model instances' : (model?.name || button.textContent);
   updateSubtitle(label);
   updateHostMetricVisibility();
+  if (selectedModel === 'all') overviewTask.now();
   viewTasks.forEach(task => task.now());
 });
 

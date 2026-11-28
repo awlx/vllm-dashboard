@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/awlx/vllm-dashboard/internal/sample"
@@ -23,6 +24,7 @@ var (
 	modelUpDesc      = telemetryDesc("model_up", "Whether the latest model poll succeeded and its sample and last success are fresh.", true)
 	modelSuccessDesc = telemetryDesc("model_last_success_timestamp_seconds", "Unix timestamp of the last successful model scrape, when known.", true)
 	modelSampleDesc  = telemetryDesc("model_sample_timestamp_seconds", "Unix timestamp of the latest model sample, including failed polls.", true)
+	gpuModelMemDesc  = prometheus.NewDesc("vllm_dashboard_node_gpu_model_memory_bytes", "VRAM used by one model on one GPU, in bytes. The model label is a model key or other.", []string{"node", "node_key", "gpu", "model"}, nil)
 	promptTokensDesc = telemetryDesc("model_prompt_tokens_total", "Cumulative engine prompt tokens; resets on engine restart.", true)
 	genTokensDesc    = telemetryDesc("model_generation_tokens_total", "Cumulative engine generated tokens; resets on engine restart.", true)
 	completedDesc    = telemetryDesc("model_requests_completed_total", "Cumulative engine completed requests; resets on engine restart.", true)
@@ -32,6 +34,11 @@ var (
 type sampleGauge struct {
 	desc  *prometheus.Desc
 	value func(sample.Sample) float64
+}
+
+type gpuGauge struct {
+	desc  *prometheus.Desc
+	value func(sample.GPUStat) float64
 }
 
 func modelGauge(name, help string, value func(sample.Sample) float64) sampleGauge {
@@ -65,11 +72,39 @@ var hostGauges = []sampleGauge{
 	hostGauge("gpu_temperature_celsius", "Sampled GPU temperature in degrees Celsius.", func(s sample.Sample) float64 { return s.GPUTempC }),
 	hostGauge("gpu_power_watts", "Sampled GPU power in watts.", func(s sample.Sample) float64 { return s.GPUPowerW }),
 	hostGauge("gpu_clock_hertz", "Sampled GPU clock frequency in hertz.", func(s sample.Sample) float64 { return s.GPUClockMHz * 1e6 }),
+	hostGauge("gpu_memory_used_bytes", "GPU memory used across all GPUs, in bytes.", sumGPUMem(func(g sample.GPUStat) float64 { return g.VRAMUsedMB })),
+	hostGauge("gpu_memory_total_bytes", "Total GPU memory across all GPUs, in bytes.", sumGPUMem(func(g sample.GPUStat) float64 { return g.VRAMTotalMB })),
 	hostGauge("memory_used_ratio", "Host memory utilization ratio.", func(s sample.Sample) float64 { return s.MemUsedPct / 100 }),
 	hostGauge("memory_used_bytes", "Host memory used in bytes (cached memory GB fields are GiB).", func(s sample.Sample) float64 { return s.MemUsedGB * (1 << 30) }),
 	hostGauge("memory_total_bytes", "Host memory total in bytes (cached memory GB fields are GiB).", func(s sample.Sample) float64 { return s.MemTotalGB * (1 << 30) }),
 	hostGauge("network_receive_bytes_per_second", "Non-loopback network receive rate in bytes per second.", func(s sample.Sample) float64 { return s.NetRxMbps * 1e6 / 8 }),
 	hostGauge("network_transmit_bytes_per_second", "Non-loopback network transmit rate in bytes per second.", func(s sample.Sample) float64 { return s.NetTxMbps * 1e6 / 8 }),
+}
+
+// gpuGauges are reported once per GPU with a gpu index label. They use a
+// gpus_ prefix so the names do not collide with the aggregate host gauges.
+var gpuGauges = []gpuGauge{
+	perGPUGauge("memory_used_bytes", "GPU memory used by one GPU, in bytes.", func(g sample.GPUStat) float64 { return g.VRAMUsedMB * (1 << 20) }),
+	perGPUGauge("memory_total_bytes", "Total GPU memory of one GPU, in bytes.", func(g sample.GPUStat) float64 { return g.VRAMTotalMB * (1 << 20) }),
+	perGPUGauge("utilization_percent", "Sampled GPU utilization in percent.", func(g sample.GPUStat) float64 { return g.UtilPct }),
+	perGPUGauge("memory_utilization_percent", "Sampled GPU memory controller utilization in percent.", func(g sample.GPUStat) float64 { return g.MemUtilPct }),
+	perGPUGauge("temperature_celsius", "Sampled GPU temperature in degrees Celsius.", func(g sample.GPUStat) float64 { return g.TempC }),
+	perGPUGauge("power_watts", "Sampled GPU power in watts.", func(g sample.GPUStat) float64 { return g.PowerW }),
+	perGPUGauge("clock_hertz", "Sampled GPU clock frequency in hertz.", func(g sample.GPUStat) float64 { return g.ClockMHz * 1e6 }),
+}
+
+func perGPUGauge(name, help string, value func(sample.GPUStat) float64) gpuGauge {
+	return gpuGauge{prometheus.NewDesc("vllm_dashboard_node_gpus_"+name, help, []string{"node", "node_key", "gpu"}, nil), value}
+}
+
+func sumGPUMem(field func(sample.GPUStat) float64) func(sample.Sample) float64 {
+	return func(s sample.Sample) float64 {
+		total := 0.0
+		for _, gpu := range s.GPUs {
+			total += field(gpu)
+		}
+		return total * (1 << 20)
+	}
 }
 
 type telemetryCollector struct {
@@ -78,13 +113,16 @@ type telemetryCollector struct {
 }
 
 func (c *telemetryCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, desc := range []*prometheus.Desc{nodeUpDesc, nodeSampleDesc, nodeInfoDesc, modelUpDesc, modelSuccessDesc, modelSampleDesc, promptTokensDesc, genTokensDesc, completedDesc, preemptionsDesc} {
+	for _, desc := range []*prometheus.Desc{nodeUpDesc, nodeSampleDesc, nodeInfoDesc, modelUpDesc, modelSuccessDesc, modelSampleDesc, gpuModelMemDesc, promptTokensDesc, genTokensDesc, completedDesc, preemptionsDesc} {
 		ch <- desc
 	}
 	for _, gauge := range modelGauges {
 		ch <- gauge.desc
 	}
 	for _, gauge := range hostGauges {
+		ch <- gauge.desc
+	}
+	for _, gauge := range gpuGauges {
 		ch <- gauge.desc
 	}
 }
@@ -121,6 +159,14 @@ func (c *telemetryCollector) Collect(ch chan<- prometheus.Metric) {
 		if freshTelemetryTimestamp(host.Time, c.now) {
 			for _, gauge := range hostGauges {
 				emitTelemetry(ch, gauge.desc, prometheus.GaugeValue, gauge.value(host), nodeLabels...)
+			}
+			for _, gauge := range gpuGauges {
+				for _, gpu := range host.GPUs {
+					emitTelemetry(ch, gauge.desc, prometheus.GaugeValue, gauge.value(gpu), nodeLabels[0], node.key, strconv.Itoa(gpu.Index))
+				}
+			}
+			for _, mem := range host.GPUModels {
+				emitTelemetry(ch, gpuModelMemDesc, prometheus.GaugeValue, mem.MB*(1<<20), nodeLabels[0], node.key, strconv.Itoa(mem.GPU), mem.Model)
 			}
 		}
 		for _, model := range node.snapshot.Models {
