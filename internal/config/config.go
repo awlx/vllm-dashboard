@@ -159,6 +159,7 @@ const (
 	EnvListen   = "VLLM_DASHBOARD_LISTEN"
 	EnvHostname = "VLLM_DASHBOARD_HOSTNAME"
 	EnvPeers    = "VLLM_DASHBOARD_PEERS"
+	EnvNodes    = "VLLM_DASHBOARD_NODES"
 	EnvDiscover = "VLLM_DASHBOARD_DISCOVER"
 )
 
@@ -230,7 +231,121 @@ func (cfg *Config) applyEnv() error {
 	for _, peerURL := range strings.FieldsFunc(getenv(EnvPeers), func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
 		cfg.Peers = append(cfg.Peers, Peer{URL: peerURL})
 	}
+	if err := cfg.applyNodes(getenv(EnvNodes)); err != nil {
+		return err
+	}
 	return nil
+}
+
+// applyNodes adds one model per vLLM server URL of EnvNodes to the node
+// models. A URL that matches a file model by its metrics_url, or by the
+// local metrics URL derived from its port, is skipped.
+func (cfg *Config) applyNodes(value string) error {
+	used := map[string]bool{}
+	knownURLs := map[string]bool{}
+	for _, model := range cfg.Node.Models {
+		if key := pendingKey(model); key != "" {
+			used[key] = true
+		}
+		if metrics := pendingMetricsURL(model); metrics != "" {
+			knownURLs[metrics] = true
+		}
+	}
+	nodeURLs := map[string]bool{}
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
+		model, err := NodeModel(raw)
+		if err != nil {
+			return fmt.Errorf("%s: %w", EnvNodes, err)
+		}
+		metrics := pendingMetricsURL(model)
+		if knownURLs[metrics] {
+			continue
+		}
+		if nodeURLs[metrics] {
+			return fmt.Errorf("%s: duplicate node url %q", EnvNodes, raw)
+		}
+		model.Key = UniqueKey(model.Key, model.Port, used)
+		used[model.Key] = true
+		nodeURLs[metrics] = true
+		cfg.Node.Models = append(cfg.Node.Models, model)
+	}
+	return nil
+}
+
+// NodeModel returns the model for a vLLM server base URL of EnvNodes, for
+// example "http://gpu0:8000". The metrics URL is the base URL plus
+// /metrics. The key and the fallback name come from the URL host; the name
+// is marked automatic so that the served model name from /v1/models
+// replaces it. The port is marked automatic, so that Merge does not match
+// a remote server against a local server on the same port.
+func NodeModel(raw string) (Model, error) {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return Model{}, fmt.Errorf("invalid node url %q", raw)
+	}
+	if path := strings.TrimRight(parsed.Path, "/"); path != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.User != nil {
+		return Model{}, fmt.Errorf("node url %q must be scheme://host[:port]", raw)
+	}
+	host := parsed.Hostname()
+	key := SanitizeKey(ShortHostname(host))
+	if net.ParseIP(host) != nil {
+		key = SanitizeKey(host)
+	}
+	if key == "" {
+		key = "node"
+	}
+	return Model{
+		Key:        key,
+		Name:       host,
+		NameAuto:   true,
+		MetricsURL: strings.TrimRight(raw, "/") + "/metrics",
+		Port:       parsed.Port(),
+		PortAuto:   true,
+	}, nil
+}
+
+// pendingKey returns the key that CompleteModel would derive for a file
+// model. applyEnv runs before complete(), so applyNodes seeds the used keys
+// with it: a node URL cannot then take the key of a file model.
+func pendingKey(model Model) string {
+	if model.Key != "" {
+		return model.Key
+	}
+	if key := SanitizeKey(model.Name); key != "" {
+		return key
+	}
+	if model.Port != "" {
+		return "port-" + model.Port
+	}
+	parsed, err := url.ParseRequestURI(model.MetricsURL)
+	if err == nil {
+		if key := SanitizeKey(parsed.Hostname()); key != "" {
+			return key
+		}
+	}
+	return ""
+}
+
+// pendingMetricsURL returns the metrics URL that CompleteModel would give a
+// file model: its metrics_url, or the local URL derived from its port.
+// applyNodes compares node URLs before complete() has filled the models.
+// The scheme and the host are lower-cased and trailing slashes are removed,
+// so that a node URL matches regardless of case.
+func pendingMetricsURL(model Model) string {
+	raw := model.MetricsURL
+	if raw == "" {
+		if model.Port == "" {
+			return ""
+		}
+		raw = "http://127.0.0.1:" + model.Port + "/metrics"
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return ""
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery, parsed.ForceQuery, parsed.Fragment = "", false, ""
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host) + parsed.Path
 }
 
 // dropLegacyFields logs and clears the obsolete fields of an old file.

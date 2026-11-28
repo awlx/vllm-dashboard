@@ -11,7 +11,9 @@
 #
 # Node agent: the "node-agent" service needs no configuration file. It finds
 # the local vLLM and TensorFold servers in /proc. For this, it shares the PID
-# namespace and the network of the host.
+# namespace and the network of the host. To watch vLLM servers that are not
+# on the local host, for example containers, set:
+#   VLLM_DASHBOARD_NODES=http://qwen-main-gpu0:8000,http://qwen-embedding:8000
 #
 # The dashboard has no built-in authentication. Keep the published port on a
 # trusted network or put an authenticating reverse proxy in front of it.

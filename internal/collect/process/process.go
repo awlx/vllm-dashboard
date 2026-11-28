@@ -3,6 +3,8 @@ package process
 
 import (
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -38,8 +40,27 @@ func findVLLMPid(port string) (string, error) {
 	return "", os.ErrNotExist
 }
 
+// remoteMetrics reports whether the metrics URL of the model points at
+// another host. Process data is local only, so a remote model on a
+// coinciding port must not get the identity of the local process.
+func remoteMetrics(model config.Model) bool {
+	parsed, err := url.ParseRequestURI(model.MetricsURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return !(ip != nil && (ip.IsLoopback() || ip.IsUnspecified()))
+}
+
 // StartedAt returns the start time of the vLLM process of model.
 func StartedAt(model config.Model) time.Time {
+	if remoteMetrics(model) {
+		return time.Time{}
+	}
 	pid, err := findVLLMPid(model.Port)
 	if err != nil {
 		return time.Time{}
@@ -144,7 +165,9 @@ func Identity(model config.Model) (sample.ServerInfo, string) {
 	info := sample.ServerInfo{}
 	processPID := ""
 
-	if pid, err := findVLLMPid(model.Port); err == nil {
+	if remoteMetrics(model) {
+		// The model runs on another host; there is no local process to read.
+	} else if pid, err := findVLLMPid(model.Port); err == nil {
 		processPID = pid
 		if args, aerr := readCmdlineArgs(pid); aerr == nil {
 			info.Model = argValue(args, "--model")

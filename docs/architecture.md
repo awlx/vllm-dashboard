@@ -37,7 +37,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o vllm-dashboard ./cmd/vllm-d
 | Component | Package | Main identifiers | Purpose |
 | --- | --- | --- | --- |
 | Entry point | `cmd/vllm-dashboard` | `main` | Loads the configuration, runs the first model discovery, reads the vLLM and kernel versions, starts the GPU sampler, the poller, and the peer resolver, registers the handlers on one `http.ServeMux`, and serves HTTP. |
-| Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `CompleteModel`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. The file is optional. It rejects unknown fields. It logs and ignores obsolete fields. Applies the `VLLM_DASHBOARD_*` environment variables. Fills empty fields from the host name, the URLs, and the ports. |
+| Configuration | `internal/config` | `Config`, `Node`, `Model`, `Peer`, `Load`, `Default`, `CompleteModel`, `NodeModel`, `ParsePollInterval`, `Interval`, `DisplayName`, `ScopedModelKey` | Reads strict JSON from `VLLM_DASHBOARD_CONFIG`. The file is optional. It rejects unknown fields. It logs and ignores obsolete fields. Applies the `VLLM_DASHBOARD_*` environment variables. Fills empty fields from the host name, the URLs, and the ports. |
 | Model discovery | `internal/discovery` | `Scan`, `Probe`, `Discover`, `Merge`, `NameModels`, `Tracker` | Finds vLLM and TensorFold server processes in `/proc`, reads their flags and systemd unit, and checks their `/metrics` endpoint. `Tracker` keeps a stopped model for a grace time and then removes it. |
 | Data types | `internal/sample` | `Sample`, `TokenUsage`, `ModelOverview`, `ServerInfo` | JSON types of the HTTP API. |
 | Local state | `internal/store` | `Store`, `ModelState`, `New`, `Update`, `Append`, `Samples`, `Snapshot`, `HistorySize`, `OnlineWindow`, `AppendLongSample`, `AggregateSampleSets`, `HistoryWindow`, `LongInterval`, `LongSize` | Holds the state and history of each local model and the latest host sample. One `sync.RWMutex` in `Store` protects them. Builds the minute rollup and calculates token usage windows. |
@@ -107,7 +107,7 @@ environment variables. `config.Load` makes the configuration in this sequence:
 | `node.key`, `node.name` | Short host name from `os.Hostname()` | `VLLM_DASHBOARD_HOSTNAME` |
 | `node.hostname` | Full host name, if it is a valid DNS name | `VLLM_DASHBOARD_HOSTNAME` |
 | `node.discover` | `true` | `VLLM_DASHBOARD_DISCOVER` |
-| `node.models` | Found by discovery | None |
+| `node.models` | Found by discovery | `VLLM_DASHBOARD_NODES` (comma-separated server base URLs, added to the file models) |
 | `peers` | None | `VLLM_DASHBOARD_PEERS` (comma-separated URLs, added to the file peers) |
 
 A model in `node.models` needs `port` or `metrics_url`. The dashboard makes
@@ -115,6 +115,17 @@ each value from the other: port `8000` gives
 `http://127.0.0.1:8000/metrics`. The model `key` comes from `name` or from the
 port (`port-8000`). The model name comes from `--served-model-name` or
 `/v1/models`.
+
+`VLLM_DASHBOARD_NODES` addresses vLLM or TensorFold servers directly, for
+example `http://gpu0:8000,http://gpu1:8000`. Each URL must be
+`scheme://host[:port]`. The dashboard adds one model per URL with
+`metrics_url` set to the URL plus `/metrics`. The model key comes from the URL
+host; if two URLs have the same host label, the key gets the port as a
+suffix. The model name is the URL host until the served model name from
+`/v1/models` replaces it. A URL that matches a file model by its
+`metrics_url`, or by the local metrics URL derived from its `port`, is
+skipped; a URL that appears twice in the variable is an error. The models are known
+models: discovery keeps them and does not rename their keys.
 
 A peer is a URL string. The collector reads `key`, `name`, and `hostname`
 from `GET /api/node` of the peer every 30 seconds. Until the peer answers, the

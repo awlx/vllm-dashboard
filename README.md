@@ -101,12 +101,25 @@ variables override the file.
 | `node.key`, `node.name` | Short host name | Yes | `VLLM_DASHBOARD_HOSTNAME` |
 | `node.hostname` | Full host name | Yes | `VLLM_DASHBOARD_HOSTNAME` |
 | `node.discover` | `true` | No | `VLLM_DASHBOARD_DISCOVER` |
-| `node.models` | Discovered servers | Yes | None |
+| `node.models` | Discovered servers | Yes | `VLLM_DASHBOARD_NODES` |
 | `peers` | None | No | `VLLM_DASHBOARD_PEERS` |
 
 Add a model to `node.models` only if discovery cannot find it. A model needs
 `port` or `metrics_url`. See [config.node.example.json](config.node.example.json)
 and [config.example.json](config.example.json).
+
+### Remote servers without a configuration file
+
+To watch vLLM servers on other hosts or containers, set
+`VLLM_DASHBOARD_NODES` to their comma-separated base URLs:
+
+```sh
+VLLM_DASHBOARD_NODES=http://qwen-main-gpu0:8000,http://qwen-embedding:8000
+```
+
+The dashboard adds one model per URL and reads each model name from the
+server's `/v1/models` endpoint. Process details (server flags, systemd unit,
+uptime) are only read for servers that run on the local host.
 
 Use the same `poll_interval` on all nodes and on the collector. Old
 configuration files still load. The dashboard ignores obsolete keys and logs
