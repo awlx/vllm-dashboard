@@ -122,8 +122,9 @@ example `http://gpu0:8000,http://gpu1:8000`. Each URL must be
 `metrics_url` set to the URL plus `/metrics`. The model key comes from the URL
 host; if two URLs have the same host label, the key gets the port as a
 suffix. The model name is the URL host until the served model name from
-`/v1/models` replaces it. A URL that is already in `node.models` is skipped;
-a URL that appears twice in the variable is an error. The models are known
+`/v1/models` replaces it. A URL that matches a file model by its
+`metrics_url`, or by the local metrics URL derived from its `port`, is
+skipped; a URL that appears twice in the variable is an error. The models are known
 models: discovery keeps them and does not rename their keys.
 
 A peer is a URL string. The collector reads `key`, `name`, and `hostname`

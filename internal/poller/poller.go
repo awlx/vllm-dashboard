@@ -64,14 +64,16 @@ func (p *Poller) Run() {
 }
 
 // Discover runs discovery once and updates the model list in the store.
-// The keys and names of known models do not change.
+// The keys of known models do not change. A name that is still automatic
+// stays pending: NameModels resolves it from /v1/models once the server
+// answers, for example a remote server that was unreachable at startup.
 func (p *Poller) Discover() {
 	now := time.Now()
 	p.lastDiscover = now
 	known := p.store.Models()
 	fixed := make([]config.Model, len(known))
 	for index, model := range known {
-		model.KeyAuto, model.NameAuto = false, false
+		model.KeyAuto = false
 		fixed[index] = model
 	}
 	updated, removed := p.tracker.Update(fixed, p.discover(), now)

@@ -208,3 +208,31 @@ func TestNameModels(t *testing.T) {
 		t.Errorf("automatic flags = %v, %v", got[0].KeyAuto, got[3].KeyAuto)
 	}
 }
+
+func TestMergeKeepsRemoteNodeModelApartFromLocalServer(t *testing.T) {
+	remote, err := config.NodeModel("http://gpu.example.net:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !remote.PortAuto {
+		t.Fatal("NodeModel did not mark the port automatic")
+	}
+	local := complete(t, config.Model{Key: "chat", Name: "Chat", Port: "8000"})
+	discovered := []config.Model{
+		{Key: "qwen", Name: "Qwen", MetricsURL: "http://127.0.0.1:8000/metrics", Port: "8000", Unit: "vllm-chat.service"},
+	}
+	got := Merge([]config.Model{remote, local}, discovered)
+	if len(got) != 2 {
+		t.Fatalf("Merge returned %d models: %+v", len(got), got)
+	}
+	if got[0].Key != "gpu" || got[0].MetricsURL != "http://gpu.example.net:8000/metrics" || got[0].Unit != "" || !got[0].NameAuto {
+		t.Errorf("remote model = %+v", got[0])
+	}
+	if got[1].Key != "chat" || got[1].Name != "Chat" || got[1].Unit != "vllm-chat.service" {
+		t.Errorf("local model = %+v", got[1])
+	}
+	again := Merge(got, discovered)
+	if !reflect.DeepEqual(again, got) {
+		t.Errorf("second Merge changed the models: %+v", again)
+	}
+}
