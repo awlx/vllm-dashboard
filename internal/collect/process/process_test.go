@@ -103,3 +103,29 @@ func TestSystemdPropertyDetectsUnitScope(t *testing.T) {
 		}
 	}
 }
+
+func TestIdentitySkipsRemoteModels(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "40"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := "vllm\x00serve\x00org/m\x00--port\x008000\x00"
+	if err := os.WriteFile(filepath.Join(root, "40", "cmdline"), []byte(args), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := procRoot
+	procRoot = root
+	defer func() { procRoot = original }()
+
+	remote := config.Model{Port: "8000", MetricsURL: "http://192.0.2.5:8000/metrics"}
+	info, pid := Identity(remote)
+	if pid != "" || info.Model != "" || info.ServedModelName != "" {
+		t.Errorf("remote identity = %+v, pid %q, want empty", info, pid)
+	}
+
+	local := config.Model{Port: "8000", MetricsURL: "http://127.0.0.1:8000/metrics"}
+	info, pid = Identity(local)
+	if pid != "40" || info.Model != "org/m" {
+		t.Errorf("local identity = %+v, pid %q, want org/m and 40", info, pid)
+	}
+}

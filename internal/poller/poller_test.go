@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,5 +103,45 @@ func TestDiscoverAddsModelsAndKeepsKnownKeys(t *testing.T) {
 	}
 	if _, ok := st.LocalModelKey("node/coder"); !ok {
 		t.Fatal("discovered model has no state")
+	}
+}
+
+func TestDiscoverResolvesPendingAutomaticName(t *testing.T) {
+	var up atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if !up.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"data":[{"id":"Qwen/Qwen3-8B"}]}`))
+		if err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+
+	known := config.Model{MetricsURL: server.URL + "/metrics"}
+	if err := config.CompleteModel(&known); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(config.Config{Node: config.Node{Key: "node", Models: []config.Model{known}}})
+	p := New(st, nil, process.NewCache("", ""), func() []config.Model { return nil })
+
+	p.Discover()
+	models := st.Models()
+	if len(models) != 1 || !models[0].NameAuto || models[0].Name == "Qwen/Qwen3-8B" {
+		t.Fatalf("first discover = %+v, name should still be pending", models)
+	}
+
+	up.Store(true)
+	p.Discover()
+	models = st.Models()
+	if len(models) != 1 || models[0].Name != "Qwen/Qwen3-8B" || models[0].NameAuto {
+		t.Fatalf("second discover = %+v, name should be resolved", models)
 	}
 }
